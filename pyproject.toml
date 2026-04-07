@@ -1,0 +1,11 @@
+[project]
+name = "patent-marker"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.14"
+dependencies = [
+    "pyinstaller>=6.19.0",
+    "pyqt6>=6.11.0",
+    "python-docx>=1.2.0",
+]
