@@ -10,7 +10,7 @@ from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
     QLabel, QTextEdit, QPlainTextEdit, QFileDialog, QMessageBox,
     QStatusBar, QProgressBar, QFrame, QSplitter, QTabWidget,
-    QGroupBox, QApplication, QSizePolicy
+    QGroupBox, QApplication, QSizePolicy, QCheckBox
 )
 from PyQt6.QtCore import Qt, QTimer, QPropertyAnimation, QEasingCurve, pyqtSignal, QThread
 from PyQt6.QtGui import QFont, QIcon, QColor, QPalette, QDragEnterEvent, QDropEvent
@@ -19,8 +19,10 @@ from doc_parser import parse_document, get_section_text
 from mark_extractor import extract_marks_from_paragraph, marks_to_display_text, parse_marks_from_display_text
 from annotator import (
     smart_annotate_section, build_claims_replace_dict,
-    build_implementation_replace_dict, annotate_section
+    build_implementation_replace_dict, annotate_section,
+    smart_remove_section, annotate_paragraph_safe
 )
+from styles import DARK_THEME_QSS, LIGHT_THEME_QSS
 
 
 class AnnotateWorker(QThread):
@@ -29,11 +31,13 @@ class AnnotateWorker(QThread):
     error = pyqtSignal(str)
     progress = pyqtSignal(int)  # 进度百分比
 
-    def __init__(self, doc_data: dict, marks: dict, output_path: str):
+    def __init__(self, doc_data: dict, marks: dict, output_path: str, action: str = "add", fix_punct: bool = True):
         super().__init__()
         self.doc_data = doc_data
         self.marks = marks
         self.output_path = output_path
+        self.action = action  # "add" 或 "remove"
+        self.fix_punct = fix_punct
 
     def run(self):
         try:
@@ -46,37 +50,50 @@ class AnnotateWorker(QThread):
 
             self.progress.emit(10)
 
-            # 标注权利要求书
+            # 处理权利要求书
             if '权利要求书' in sections:
-                # 权利要求书使用 名称 → 名称（数字） 格式
-                # 注意：需要确保不重复标注
                 section = sections['权利要求书']
-                # 先检查是否已标注
-                result = smart_annotate_section(
-                    paragraphs, section, self.marks, mode="claims"
-                )
-                if result == -1:
-                    claims_count = -1  # 表示已经标注过
-                else:
+                if self.action == "add":
+                    result = smart_annotate_section(paragraphs, section, self.marks, mode="claims")
                     claims_count = result
+                else:
+                    claims_count = smart_remove_section(paragraphs, section, self.marks, mode="claims")
 
             self.progress.emit(50)
 
-            # 标注具体实施方式
+            # 处理具体实施方式
             if '具体实施方式' in sections:
                 section = sections['具体实施方式']
-                result = smart_annotate_section(
-                    paragraphs, section, self.marks, mode="implementation"
-                )
-                if result == -1:
-                    impl_count = -1
-                else:
+                if self.action == "add":
+                    result = smart_annotate_section(paragraphs, section, self.marks, mode="implementation")
                     impl_count = result
+                else:
+                    impl_count = smart_remove_section(paragraphs, section, self.marks, mode="implementation")
 
             self.progress.emit(80)
 
+            # 是否执行标点修复（全文档统一修复）
+            if self.fix_punct:
+                punct_map = {
+                    "。。": "。",
+                    "，，": "，",
+                    ",,": ",",
+                    "..": ".",
+                    "、、": "、",
+                    "！！": "！",
+                    "？？": "？"
+                }
+                # 为了防止超过三次连续标点（如。。。），我们在全文范围内循环清理3遍
+                for _ in range(3):
+                    for para in paragraphs:
+                        if para.text.strip():
+                            annotate_paragraph_safe(para, punct_map)
+
             # 保存文件
-            doc.save(self.output_path)
+            try:
+                doc.save(self.output_path)
+            except PermissionError:
+                raise Exception(f"保存失败：文件 '{os.path.basename(self.output_path)}' 正被其他程序占用！\n\n请先在 Word 或 WPS 中【关闭】该文档，然后重试。")
 
             self.progress.emit(100)
 
@@ -88,19 +105,21 @@ class AnnotateWorker(QThread):
 
     def _build_result_message(self, claims_count, impl_count):
         parts = []
+        action_name = "标注" if self.action == "add" else "删除"
+        
         if claims_count == -1:
             parts.append("权利要求书：已有标注，跳过")
         elif claims_count == 0:
-            parts.append("权利要求书：未找到需要标注的内容")
+            parts.append(f"权利要求书：未找到需要{action_name}的内容")
         else:
-            parts.append(f"权利要求书：成功标注 {claims_count} 个段落")
+            parts.append(f"权利要求书：成功{action_name} {claims_count} 个段落")
 
         if impl_count == -1:
             parts.append("具体实施方式：已有标注，跳过")
         elif impl_count == 0:
-            parts.append("具体实施方式：未找到需要标注的内容")
+            parts.append(f"具体实施方式：未找到需要{action_name}的内容")
         else:
-            parts.append(f"具体实施方式：成功标注 {impl_count} 个段落")
+            parts.append(f"具体实施方式：成功{action_name} {impl_count} 个段落")
 
         return "\n".join(parts)
 
@@ -157,6 +176,7 @@ class MainWindow(QMainWindow):
         self.current_marks = {}      # 当前标记字典
         self.current_file_path = ""  # 当前打开的文件路径
         self.worker = None           # 后台工作线程
+        self.current_theme = "light"  # 默认变浅色
 
         self.setWindowTitle("📌 专利附图标记助手")
         self.setMinimumSize(1100, 750)
@@ -216,6 +236,19 @@ class MainWindow(QMainWindow):
         title_label = QLabel("专利附图标记助手")
         title_label.setObjectName("titleLabel")
         title_row.addWidget(title_label)
+        
+        # 主题切换按钮
+        self.theme_btn = QPushButton("🌓 切换主题")
+        self.theme_btn.setObjectName("smallBtn")
+        self.theme_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.theme_btn.clicked.connect(self._toggle_theme)
+        title_row.addWidget(self.theme_btn)
+        
+        # 标点符号修正勾选框
+        self.fix_punctuation_cb = QCheckBox("自动修正连续的标点（如,,或。。）")
+        self.fix_punctuation_cb.setChecked(True)
+        title_row.addWidget(self.fix_punctuation_cb)
+        
         title_row.addStretch()
 
         # 文件信息标签
@@ -310,6 +343,18 @@ class MainWindow(QMainWindow):
         self.annotate_impl_btn.setEnabled(False)
         self.annotate_impl_btn.clicked.connect(lambda: self._on_annotate_section("implementation"))
         action_layout.addWidget(self.annotate_impl_btn)
+
+        # 伸缩空间打底
+        action_layout.addStretch()
+
+        # 一键删除所有标记
+        self.remove_marks_btn = QPushButton("🧹 删除所有标记")
+        self.remove_marks_btn.setObjectName("dangerBtn")
+        self.remove_marks_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.remove_marks_btn.setEnabled(False)
+        self.remove_marks_btn.setToolTip("基于标记字典，扫描并清洗正文中的编号")
+        self.remove_marks_btn.clicked.connect(self._on_remove_marks)
+        action_layout.addWidget(self.remove_marks_btn)
 
         layout.addLayout(action_layout)
 
@@ -444,6 +489,7 @@ class MainWindow(QMainWindow):
             self.annotate_btn.setEnabled(True)
             self.annotate_claims_btn.setEnabled(True)
             self.annotate_impl_btn.setEnabled(True)
+            self.remove_marks_btn.setEnabled(True)
             self.refresh_marks_btn.setEnabled(True)
 
             self.progress_bar.setValue(100)
@@ -528,9 +574,39 @@ class MainWindow(QMainWindow):
         self.doc_data = parse_document(self.current_file_path)
 
         # 启动后台标注线程
-        self.worker = AnnotateWorker(self.doc_data, self.current_marks, output_path)
+        self.worker = AnnotateWorker(
+            self.doc_data, self.current_marks, output_path, 
+            action="add", fix_punct=self.fix_punctuation_cb.isChecked()
+        )
         self.worker.progress.connect(self.progress_bar.setValue)
-        self.worker.finished.connect(lambda msg, c, i: self._on_annotate_finished(msg, output_path))
+        self.worker.finished.connect(lambda msg, c, i: self._on_annotate_finished(msg, output_path, "标注"))
+        self.worker.error.connect(self._on_annotate_error)
+        self.worker.start()
+
+    def _on_remove_marks(self):
+        """一键删除所有标记（包含括号里的数字）"""
+        if not self._validate_before_annotate():
+            return
+
+        self._sync_marks_from_editor()
+        output_path = self._generate_output_path(action_name="已清洗")
+
+        self._log("=" * 50)
+        self._log("🧹 开始删除所有标记...")
+        
+        self._set_buttons_enabled(False)
+        self.progress_bar.setVisible(True)
+        self.progress_bar.setValue(0)
+
+        # 重新解析
+        self.doc_data = parse_document(self.current_file_path)
+
+        self.worker = AnnotateWorker(
+            self.doc_data, self.current_marks, output_path, 
+            action="remove", fix_punct=self.fix_punctuation_cb.isChecked()
+        )
+        self.worker.progress.connect(self.progress_bar.setValue)
+        self.worker.finished.connect(lambda msg, c, i: self._on_annotate_finished(msg, output_path, "清除"))
         self.worker.error.connect(self._on_annotate_error)
         self.worker.start()
 
@@ -570,6 +646,8 @@ class MainWindow(QMainWindow):
 
                 self.worker.progress.emit(20)
 
+                fix_punct = self.fix_punctuation_cb.isChecked()
+
                 if mode == "claims":
                     replace_dict = build_claims_replace_dict(self.current_marks)
                 else:
@@ -578,9 +656,22 @@ class MainWindow(QMainWindow):
                 section = sections[section_name]
                 count = annotate_section(paragraphs, section, replace_dict,
                                          marks=self.current_marks, mode=mode)
+                
+                # 若勾选则额外对该章节进行修正
+                if fix_punct:
+                    punct_map = {
+                        "。。": "。", "，，": "，", ",,": ",", "..": ".", "、、": "、", "！！": "！", "？？": "？"
+                    }
+                    for _ in range(3):
+                        for i in range(section.start_idx, section.end_idx):
+                            if paragraphs[i].text.strip():
+                                annotate_paragraph_safe(paragraphs[i], punct_map)
 
                 self.worker.progress.emit(70)
-                doc.save(output_path)
+                try:
+                    doc.save(output_path)
+                except PermissionError:
+                    raise Exception(f"保存失败：文件 '{os.path.basename(output_path)}' 正被其他程序占用！\n\n请先在 Word 或 WPS 中【关闭】该文档，然后重试。")
                 self.worker.progress.emit(100)
 
                 if count > 0:
@@ -593,26 +684,26 @@ class MainWindow(QMainWindow):
                 self.worker.error.emit(f"标注失败：{str(e)}\n{traceback.format_exc()}")
 
         self.worker.run = custom_run
-        self.worker.finished.connect(lambda msg, c, i: self._on_annotate_finished(msg, output_path))
+        self.worker.finished.connect(lambda msg, c, i: self._on_annotate_finished(msg, output_path, "标注"))
         self.worker.error.connect(self._on_annotate_error)
         self.worker.start()
 
-    def _on_annotate_finished(self, message: str, output_path: str):
-        """标注完成回调"""
+    def _on_annotate_finished(self, message: str, output_path: str, action_name: str = "操作"):
+        """操作完成回调"""
         self._set_buttons_enabled(True)
-        self._log(f"✅ 标注完成！")
+        self._log(f"✅ {action_name}完成！")
         self._log(f"   {message.replace(chr(10), chr(10) + '   ')}")
         self._log(f"   文件已保存至: {output_path}")
 
-        self.status_bar.showMessage(f"标注完成 — {os.path.basename(output_path)}")
-        self._show_toast("标注完成！文件已保存", "success")
+        self.status_bar.showMessage(f"{action_name}完成 — {os.path.basename(output_path)}")
+        self._show_toast(f"{action_name}完成！文件已保存", "success")
 
         QTimer.singleShot(1500, lambda: self.progress_bar.setVisible(False))
 
         # 提示用户
         reply = QMessageBox.information(
-            self, "标注完成",
-            f"文件已成功标注并保存至：\n\n{output_path}\n\n{message}\n\n是否打开文件所在目录？",
+            self, f"{action_name}完成",
+            f"文件已成功{action_name}并保存至：\n\n{output_path}\n\n{message}\n\n是否打开文件所在目录？",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.Yes
         )
@@ -650,11 +741,14 @@ class MainWindow(QMainWindow):
             self.current_marks = parse_marks_from_display_text(text)
             self.mark_count_label.setText(f"共 {len(self.current_marks)} 个标记")
 
-    def _generate_output_path(self) -> str:
-        """生成输出文件路径: 原名_已标注.docx"""
+    def _generate_output_path(self, action_name="已标注") -> str:
+        """生成输出文件路径"""
         dir_name = os.path.dirname(self.current_file_path)
         base_name = os.path.splitext(os.path.basename(self.current_file_path))[0]
-        output_name = f"{base_name}_已标注.docx"
+        # 去掉旧后缀如果存在
+        if base_name.endswith("_已标注") or base_name.endswith("_已清洗"):
+            base_name = base_name.rsplit("_", 1)[0]
+        output_name = f"{base_name}_{action_name}.docx"
         return os.path.join(dir_name, output_name)
 
     def _set_buttons_enabled(self, enabled: bool):
@@ -662,7 +756,19 @@ class MainWindow(QMainWindow):
         self.annotate_btn.setEnabled(enabled)
         self.annotate_claims_btn.setEnabled(enabled)
         self.annotate_impl_btn.setEnabled(enabled)
+        self.remove_marks_btn.setEnabled(enabled)
         self.file_btn.setEnabled(enabled)
+
+    def _toggle_theme(self):
+        """切换深色/浅色主题"""
+        app = QApplication.instance()
+        if self.current_theme == "dark":
+            app.setStyleSheet(LIGHT_THEME_QSS)
+            self.current_theme = "light"
+        else:
+            app.setStyleSheet(DARK_THEME_QSS)
+            self.current_theme = "dark"
+        self._show_toast(f"已切换为{'浅色' if self.current_theme == 'light' else '深色'}主题")
 
     def _update_section_buttons(self):
         """更新章节列表按钮"""

@@ -13,7 +13,7 @@ from PyQt6.QtGui import QIcon, QFont
 from PyQt6.QtCore import Qt
 
 from main_window import MainWindow
-from styles import DARK_THEME_QSS
+from styles import DARK_THEME_QSS, LIGHT_THEME_QSS
 
 
 def main():
@@ -27,8 +27,8 @@ def main():
     font = QFont("Microsoft YaHei UI", 10)
     app.setFont(font)
 
-    # 应用深色主题样式
-    app.setStyleSheet(DARK_THEME_QSS)
+    # 应用浅色主题样式作为默认
+    app.setStyleSheet(LIGHT_THEME_QSS)
 
     # 创建并显示主窗口
     window = MainWindow()

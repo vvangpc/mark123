@@ -26,35 +26,190 @@ SECTION_KEYWORDS = [
     ("背景技术", ["背景技术"]),
     ("发明内容", ["发明内容"]),
     ("附图说明", ["附图说明"]),
+    ("说明书摘要", ["说明书摘要", "摘要", "摘 要"]),
     ("具体实施方式", ["具体实施方式"]),
     ("说明书附图", ["说明书附图"]),
-    ("说明书摘要", ["说明书摘要", "摘要"]),
     ("摘要附图", ["摘要附图"]),
 ]
 
 
 def is_section_title(paragraph, keywords: list[str]) -> bool:
     """
-    判断一个段落是否是指定的章节标题。
-    判断条件：
-    1. 段落文字去除空白后与关键词完全匹配
-    2. 或者段落文字以关键词开头且为加粗样式
+    增强版：判断一个段落是否是指定的章节标题。
+    无视中间的空格、全半角空格，以及末尾可能存在的冒号。
     """
-    text = paragraph.text.strip()
-    if not text:
+    raw_text = paragraph.text.strip()
+    if not raw_text:
         return False
 
+    # 暴力清理：去除字符串中的所有空白字符（包括全角空格、半角空格、制表符）
+    clean_text = re.sub(r'\s+', '', raw_text)
+
     for kw in keywords:
-        # 精确匹配
-        if text == kw:
+        clean_kw = re.sub(r'\s+', '', kw)
+        
+        # 1. 完全匹配
+        if clean_text == clean_kw:
             return True
-        # 加粗标题匹配（有些标题可能带前缀）
-        if text == kw and paragraph.runs:
+        
+        # 2. 匹配带中英文冒号的情况 (如 "摘要：" 或 "摘要:")
+        if clean_text == f"{clean_kw}：" or clean_text == f"{clean_kw}:":
+            return True
+            
+        # 3. 字体加粗匹配 (如果首个Run是加粗的，且文本以关键词开头)
+        # 例如："说明书附图如下" 如果加粗了也可以算
+        if clean_text.startswith(clean_kw) and paragraph.runs:
             first_run = paragraph.runs[0]
-            if first_run.font.bold:
+            if first_run.font and first_run.font.bold:
                 return True
+                
+        # 4. 如果是找摘要，单独给个直接识别前缀为“摘要”但紧跟附图或冒号的条件
+        if "摘要" in clean_kw and (clean_text.startswith("摘要附图") or clean_text.startswith("摘要:")):
+             return True
 
     return False
+
+
+def _has_image(para) -> bool:
+    """检查段落是否包含图片/OLE对象"""
+    ns_w = '{http://schemas.openxmlformats.org/wordprocessingml/2006/main}'
+    ns_r = '{http://schemas.openxmlformats.org/officeDocument/2006/relationships}'
+    ns_draw = '{http://schemas.openxmlformats.org/drawingml/2006/main}'
+    el = para._element
+    if el.findall(f'.//{ns_w}object'):
+        return True
+    if el.findall(f'.//{ns_w}pict'):
+        return True
+    if el.findall(f'.//{ns_draw}blip'):
+        return True
+    # drawing 元素（内联图片）
+    ns_wp = '{http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing}'
+    if el.findall(f'.//{ns_wp}inline') or el.findall(f'.//{ns_wp}anchor'):
+        return True
+    return False
+
+
+def _infer_abstract_boundary(paragraphs, sections: dict, title_positions: list):
+    """
+    后处理：如果"具体实施方式"的区间一直延伸到了文档末尾附近，  
+    检查其末尾是否存在"说明书附图 → 说明书摘要"的典型结构。
+    如果找到，自动切分出"说明书附图"和"说明书摘要"区间。
+    
+    典型的专利文档末尾结构（无独立标题）:
+        ... 具体实施方式正文 ...
+        [空行若干]
+        [图片]           <- 说明书附图起点
+        图1
+        [图片]
+        图2
+        [空行若干]
+        摘要正文         <- 说明书摘要起点
+        [空行若干]
+        摘要附图指定为图1
+    """
+    if "具体实施方式" not in sections:
+        return
+    
+    impl_sec = sections["具体实施方式"]
+    total = len(paragraphs)
+    
+    # 只在"具体实施方式"延伸到文档末尾时才做推断
+    # （如果后面已经有其他正确切分的章节就不需要处理了）
+    if impl_sec.end_idx < total - 5:
+        return
+    
+    # 从"具体实施方式"区间的末尾向前扫描，寻找图片区域
+    # 图片区域的特征：连续的图片段落和"图N"标签
+    drawing_start = None  # 说明书附图区域的起始索引
+    abstract_start = None  # 说明书摘要的起始索引
+    
+    # 从末尾向前找到最后一个正文段落（非空、非图号、非"摘要附图指定为…"）
+    # 这就是摘要正文
+    last_content_idx = None
+    for i in range(impl_sec.end_idx - 1, impl_sec.start_idx, -1):
+        text = paragraphs[i].text.strip()
+        clean = re.sub(r'\s+', '', text)
+        # 跳过空段落
+        if not text:
+            continue
+        # 跳过"摘要附图指定为图N"这种末尾标记
+        if clean.startswith("摘要附图"):
+            continue
+        # 找到最后一个实质正文段落
+        last_content_idx = i
+        break
+    
+    if last_content_idx is None:
+        return
+    
+    # 从 last_content_idx 向前找，看其前方是否有图片区域
+    # 先定位图片区域（图片段落 + "图N" 标签段落）
+    # 从 last_content_idx 往前扫
+    scan_start = last_content_idx - 1
+    found_figure_label = False
+    figure_region_end = None
+    
+    for i in range(scan_start, impl_sec.start_idx, -1):
+        text = paragraphs[i].text.strip()
+        has_img = _has_image(paragraphs[i])
+        
+        # 匹配"图1"、"图 2"这样的图号标签
+        is_figure_label = bool(re.match(r'^图\s*\d+$', text))
+        
+        if is_figure_label or has_img:
+            if not found_figure_label:
+                figure_region_end = i
+            found_figure_label = True
+            drawing_start = i
+        elif text == "":
+            # 空行可以穿越
+            if found_figure_label:
+                drawing_start = i
+            continue
+        else:
+            # 碰到了非图片、非空的正文段落 -> 停止
+            if found_figure_label:
+                break
+            else:
+                # 在到达图片区域之前就碰到了正文 -> 没有附图区域
+                return
+                
+    if not found_figure_label or drawing_start is None:
+        return
+    
+    # 摘要正文起点 = 图片区域之后、非空的第一个段落
+    for i in range(figure_region_end + 1, impl_sec.end_idx):
+        text = paragraphs[i].text.strip()
+        if text:
+            abstract_start = i
+            break
+    
+    if abstract_start is None:
+        return
+    
+    # 验证摘要正文确实像是摘要（通常是一段较长的概述性文字）
+    abstract_text = paragraphs[abstract_start].text.strip()
+    if len(abstract_text) < 15:
+        # 太短了，可能不是摘要
+        return
+
+    # ===== 执行切分 =====
+    # 1. 缩短"具体实施方式"的范围
+    sections["具体实施方式"] = DocSection("具体实施方式", impl_sec.start_idx, drawing_start)
+    
+    # 2. 新增"说明书附图"区间（如果尚不存在）
+    if "说明书附图" not in sections:
+        sections["说明书附图"] = DocSection("说明书附图", drawing_start, abstract_start)
+        title_positions.append((drawing_start, "说明书附图"))
+    
+    # 3. 新增"说明书摘要"区间（如果尚不存在或范围为空）
+    if "说明书摘要" not in sections or sections["说明书摘要"].start_idx >= sections["说明书摘要"].end_idx:
+        sections["说明书摘要"] = DocSection("说明书摘要", abstract_start, impl_sec.end_idx)
+        # 移除旧的空摘要 title_position（如果有的话）
+        title_positions[:] = [(p, n) for p, n in title_positions if n != "说明书摘要"]
+        title_positions.append((abstract_start, "说明书摘要"))
+    
+    title_positions.sort(key=lambda x: x[0])
 
 
 def parse_document(doc_path: str) -> dict:
@@ -125,7 +280,15 @@ def parse_document(doc_path: str) -> dict:
 
         sections[name] = DocSection(name, content_start, next_pos)
 
-    # 第三步：在"附图说明"章节中寻找附图标记段落
+    # 第三步（后处理）：修正"具体实施方式"可能吞掉"说明书摘要"的问题
+    # 许多专利文档中,"说明书摘要"没有独立的标题段落，其正文直接跟在说明书附图
+    # 的图片之后。此时"具体实施方式"区间会一路延伸到文档末尾，把摘要正文一并包含。
+    # 解决策略：如果检测到"具体实施方式"且其范围延伸到文档末尾附近，从末尾向前
+    # 扫描，寻找"说明书附图"区域（IMG段落 + 图号标签 如"图1"），然后把其后的
+    # 非空正文段落标记为"说明书摘要"的起点。
+    _infer_abstract_boundary(paragraphs, sections, title_positions)
+
+    # 第四步：在"附图说明"章节中寻找附图标记段落
     mark_para = None
     mark_para_idx = None
 
