@@ -755,19 +755,8 @@ class MainWindow(QMainWindow):
         self.wb_label.mousePressEvent = lambda e: self._on_open_wordbank_dialog()
         engine_layout.addWidget(self.wb_label)
 
-        # pycorrector 状态：点击弹出说明卡
-        installed = _is_pycorrector_available()
-        self.pc_label = QLabel()
-        self.pc_label.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.pc_label.setToolTip("点击查看 pycorrector 安装与模型管理说明")
-        if installed:
-            self.pc_label.setText("✅  离线 NLP 引擎 — pycorrector 已安装")
-            self.pc_label.setStyleSheet("color: #00bfa5;")
-        else:
-            self.pc_label.setText("⚠️  离线 NLP 引擎 — pycorrector 未安装")
-            self.pc_label.setStyleSheet("color: #ffab40;")
-        self.pc_label.mousePressEvent = lambda e: self._on_open_pycorrector_dialog()
-        engine_layout.addWidget(self.pc_label)
+        # 注：「离线 NLP 引擎（pycorrector）」入口已隐藏到错别字词库编辑器内
+        # （专业用户三级菜单），主界面不再展示，避免给小白用户造成困扰。
 
         # 重复字词忽略词库入口
         self.dup_ignore_label = QLabel()
@@ -979,19 +968,18 @@ class MainWindow(QMainWindow):
             "       装完后关掉黑窗口，重新做一次第 1 步。\n"
             "\n"
             "═══════════════════════════════════════════════════\n"
-            "  第 2 步：安装 pycorrector\n"
+            "  第 2 步：安装 PyTorch (CPU版) 与 pycorrector\n"
             "═══════════════════════════════════════════════════\n"
             "\n"
-            "  在同一个黑窗口里，把下面这行整段复制粘贴进去，按【回车】：\n"
+            "  在同一个黑窗口里，先复制粘贴下面这行并按【回车】（安装底层依赖）：\n"
+            "\n"
+            "         pip install torch --index-url https://download.pytorch.org/whl/cpu\n"
+            "\n"
+            "  等待安装完成（因为没有显卡驱动包，速度较快），接着再执行下面这行：\n"
             "\n"
             "         pip install pycorrector -i https://pypi.tuna.tsinghua.edu.cn/simple\n"
             "\n"
-            "  说明：\n"
-            "  • 后面的 -i ... 是国内清华镜像，下载会快很多。\n"
-            "  • 看到一堆滚动文字是正常的，等到最后出现\n"
-            "         Successfully installed pycorrector-x.x.x\n"
-            "    就表示装好了。整个过程大概几分钟到十几分钟。\n"
-            "  • 如果中途红字报错，可以再运行一次同一行命令重试。\n"
+            "  说明：看到最后出现 Successfully installed pycorrector-x.x.x 就表示装好了。\n"
             "\n"
             "═══════════════════════════════════════════════════\n"
             "  第 3 步：验证安装成功\n"
@@ -1010,13 +998,11 @@ class MainWindow(QMainWindow):
             "\n"
             "  ① 关掉本软件（直接点右上角 ×）。\n"
             "  ② 重新打开本软件。\n"
-            "  ③ 进入「错别字检查」页，看到顶部状态变成绿色\n"
-            "         ✅  离线 NLP 引擎 — pycorrector 已安装\n"
-            "     就大功告成。\n"
+            "  ③ 不需要查看任何状态 —— 安装成功后，错别字检查会自动\n"
+            "     额外调用 NLP 引擎进行更深度的检测。\n"
             "\n"
             "  ※ 也可以不重启软件，点本卡片左下角的【🔄 重新检测安装状态】\n"
-            "     按钮立即刷新。\n"
-            "\n"
+            "     按钮立即刷新；下方状态行变绿即表示已识别。\n"
             "═══════════════════════════════════════════════════\n"
             "  附：模型文件存在哪？怎么清理？\n"
             "═══════════════════════════════════════════════════\n"
@@ -1074,12 +1060,8 @@ class MainWindow(QMainWindow):
             ok = _is_pycorrector_available()
             if ok:
                 status.setText("<b style='color:#00bfa5;'>✅ 当前状态：pycorrector 已安装</b>")
-                self.pc_label.setText("✅  离线 NLP 引擎 — pycorrector 已安装")
-                self.pc_label.setStyleSheet("color: #00bfa5;")
             else:
                 status.setText("<b style='color:#ffab40;'>⚠️ 当前状态：pycorrector 未安装</b>")
-                self.pc_label.setText("⚠️  离线 NLP 引擎 — pycorrector 未安装")
-                self.pc_label.setStyleSheet("color: #ffab40;")
         reload_btn.clicked.connect(_reload)
         btn_row.addWidget(reload_btn)
 

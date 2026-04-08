@@ -171,6 +171,59 @@ WORDBANK = [
     {"wrong": "并且且",       "suggestion": "并且"},
     {"wrong": "或者者",       "suggestion": "或者"},
     {"wrong": "以及和",       "suggestion": "以及"},
+
+    # ── 用户补充：高频形近字/同音字 ──
+    {"wrong": "所诉",         "suggestion": "所述"},
+    {"wrong": "本领欲",       "suggestion": "本领域"},
+    {"wrong": "现用技术",     "suggestion": "现有技术"},
+    {"wrong": "公之常识",     "suggestion": "公知常识"},
+    {"wrong": "尤选地",       "suggestion": "优选地"},
+    {"wrong": "阀值",         "suggestion": "阈值"},
+    {"wrong": "阔值",         "suggestion": "阈值"},
+    {"wrong": "偶合",         "suggestion": "耦合"},
+    {"wrong": "限为",         "suggestion": "限位"},
+    {"wrong": "现位",         "suggestion": "限位"},
+
+    # ── 用户补充：连接 / 接合类动词 ──
+    {"wrong": "卡结",         "suggestion": "卡接"},
+    {"wrong": "咔接",         "suggestion": "卡接"},
+    {"wrong": "底接",         "suggestion": "抵接"},
+    {"wrong": "抵结",         "suggestion": "抵接"},
+    {"wrong": "套结",         "suggestion": "套接"},
+    {"wrong": "插结",         "suggestion": "插接"},
+    {"wrong": "临接",         "suggestion": "邻接"},
+
+    # ── 用户补充：结构件 / 几何特征 ──
+    {"wrong": "轴成",         "suggestion": "轴承"},
+    {"wrong": "结面",         "suggestion": "截面"},
+    {"wrong": "凭行",         "suggestion": "平行"},
+    {"wrong": "凹曹",         "suggestion": "凹槽"},
+    {"wrong": "突台",         "suggestion": "凸台"},
+    {"wrong": "密风",         "suggestion": "密封"},
+    {"wrong": "靠进",         "suggestion": "靠近"},
+    {"wrong": "远里",         "suggestion": "远离"},
+    {"wrong": "围饶",         "suggestion": "围绕"},
+    {"wrong": "溶纳腔",       "suggestion": "容纳腔"},
+
+    # ── 用户补充：步骤 / 工艺 ──
+    {"wrong": "步聚",         "suggestion": "步骤"},
+    {"wrong": "流成",         "suggestion": "流程"},
+
+    # ── 用户补充：电子电气 ──
+    {"wrong": "传敢器",       "suggestion": "传感器"},
+    {"wrong": "处里器",       "suggestion": "处理器"},
+    {"wrong": "信好",         "suggestion": "信号"},
+    {"wrong": "接搜",         "suggestion": "接收"},
+    {"wrong": "法送",         "suggestion": "发送"},
+    {"wrong": "通迅",         "suggestion": "通信"},
+
+    # ── 用户补充：材料 / 行业杂项 ──
+    {"wrong": "混泥土",       "suggestion": "混凝土"},
+    {"wrong": "钢进",         "suggestion": "钢筋"},
+    {"wrong": "反映堆",       "suggestion": "反应堆"},
+    {"wrong": "屏敝",         "suggestion": "屏蔽"},
+    {"wrong": "包复",         "suggestion": "包覆"},
+    {"wrong": "涡轮计",       "suggestion": "涡轮机"},
 ]
 
 # 移除占位（wrong == suggestion）的条目，避免无效规则

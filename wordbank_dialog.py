@@ -62,12 +62,14 @@ class WordbankDialog(QDialog):
 
         # 顶部说明
         hint = QLabel(
-            "下表显示当前生效的错别字词库（每行 2 个条目，紧凑显示）。\n"
-            "• <b>灰底</b>：内置规则（只读，可删除，删除仅对本机生效）\n"
-            "• <b>白底</b>：用户自定义规则（可自由添加 / 修改 / 删除） · 保存后立即生效"
+            "下表显示当前生效的错别字词库（每行 2 个条目，紧凑显示）。<br>"
+            "• <b>灰底</b>：内置规则（只读，可删除，删除仅对本机生效）<br>"
+            "• <b>白底</b>：用户自定义规则（可自由添加 / 修改 / 删除） · 保存后即生效  "
+            "<a href='#nlp' style='color:#0066cc;'>专业用户可增加离线 NLP 引擎 ▸</a>"
         )
         hint.setTextFormat(Qt.TextFormat.RichText)
         hint.setWordWrap(True)
+        hint.linkActivated.connect(self._on_open_nlp_tutorial)
         layout.addWidget(hint)
 
         # 搜索行
@@ -153,6 +155,24 @@ class WordbankDialog(QDialog):
         btn_row.addWidget(cancel_btn)
 
         layout.addLayout(btn_row)
+
+    def _on_open_nlp_tutorial(self, *_):
+        """点击「专业用户可增加离线 NLP 引擎」时弹出教程对话框（三级菜单）。
+        优先复用主窗口的实现，避免重复代码；找不到则给出降级提示。"""
+        parent = self.parent()
+        # parent 可能不是 MainWindow 实例（例如未来作为独立工具调用）
+        if parent is not None and hasattr(parent, "_on_open_pycorrector_dialog"):
+            try:
+                parent._on_open_pycorrector_dialog()
+                return
+            except Exception as e:
+                QMessageBox.warning(self, "无法打开教程", f"教程对话框加载失败：\n{e}")
+                return
+        QMessageBox.information(
+            self, "离线 NLP 引擎",
+            "本功能仅供专业用户：需在系统中额外安装 pycorrector 离线 NLP 库。\n"
+            "详细安装步骤请在主程序中查看（当前对话框无法独立访问教程）。"
+        )
 
     def _install_divider_delegate(self):
         """在第 2/3 列之间画一条加粗分界线（通过 item delegate 实现）"""
