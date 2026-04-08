@@ -221,3 +221,23 @@ def smart_remove_section(paragraphs, section, marks: dict[int, str], mode: str =
     """智能删除标注"""
     remove_dict = build_claims_remove_dict(marks) if mode == "claims" else build_implementation_remove_dict(marks)
     return remove_section_marks(paragraphs, section, remove_dict)
+
+
+def update_mark_paragraph_text(mark_para, new_text: str) -> bool:
+    """
+    将附图标记段落的文本替换为 new_text（保留段落格式，丢弃多余 run）。
+    用于用户编辑词典后同步回文档段落。
+    返回是否修改成功。
+    """
+    if mark_para is None:
+        return False
+    runs = list(mark_para.runs)
+    if not runs:
+        mark_para.add_run(new_text)
+        return True
+    # 第一个 run 写入新内容
+    runs[0].text = new_text
+    # 后续 run 清空（保留 run 节点以保留任何指向它们的引用）
+    for r in runs[1:]:
+        r.text = ""
+    return True

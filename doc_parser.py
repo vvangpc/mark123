@@ -244,14 +244,16 @@ def parse_document(doc_path: str) -> dict:
                 break
 
     # 如果没有找到明确的"权利要求书"标题，需要通过内容特征来识别
-    # 权利要求书的特征：段落以 "1." 或 "1、" 开头，且包含"其特征在于"
+    # 权利要求书的特征：段落以 "1." 或 "1、" 开头，且包含"其特征"
+    # （放宽匹配：原先强制要求 "其特征在于"，但部分专利文本写作
+    #  "其特征是" / "其特征为" / "其特征包括" 等，会导致权利要求书识别失败）
     section_names_found = [name for _, name in title_positions]
 
     if "权利要求书" not in section_names_found:
         # 尝试通过内容特征定位权利要求书
         for i, para in enumerate(paragraphs):
             text = para.text.strip()
-            if re.match(r'^1[.、．]', text) and '其特征在于' in text:
+            if re.match(r'^1[.、．]', text) and '其特征' in text:
                 # 找到了权利要求书的第一项，向前查找标题
                 # 权利要求书可能没有显式标题（隐含在分页符中）
                 title_positions.append((i, "权利要求书"))

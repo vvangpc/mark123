@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-main.py — 专利附图标记助手 入口文件
+main.py — 专利标记助手 入口文件
 """
 import sys
 import os
@@ -20,8 +20,8 @@ def main():
     app = QApplication(sys.argv)
 
     # 设置应用属性
-    app.setApplicationName("专利附图标记助手")
-    app.setApplicationDisplayName("专利附图标记助手")
+    app.setApplicationName("专利标记助手")
+    app.setApplicationDisplayName("专利标记助手")
 
     # 设置默认字体
     font = QFont("Microsoft YaHei UI", 10)
