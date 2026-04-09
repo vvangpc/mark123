@@ -33,22 +33,14 @@ img = Image.open(src).convert("RGBA")
 # ✅ 去掉 256px：PIL 会对 >=256px 的帧自动使用 PNG 子格式，
 #    Windows 某些渲染路径不正确处理其透明通道，导致白底框。
 #    128px 及以下均以 BMP+Alpha mask 编码，透明度完全正常。
-sizes = [16, 32, 48, 64, 128]
+sizes = [(16, 16), (32, 32), (48, 48), (64, 64), (128, 128)]
 
-imgs = []
-for s in sizes:
-    # 每帧统一合成到透明底图，确保 alpha 通道完整
-    frame = Image.new("RGBA", (s, s), (0, 0, 0, 0))
-    resized = img.resize((s, s), Image.LANCZOS)
-    frame.paste(resized, (0, 0), resized)
-    imgs.append(frame)
-
-# 保存多尺寸 ICO（全部为 BMP+Alpha mask 编码，无白底问题）
-imgs[0].save(
+# 直接使用最高分辨率原图的 save 方法，并传入 sizes 参数，
+# PIL 会自动缩放并以 BMP 子格式封装不同尺寸进入 ICO 中。
+img.save(
     dst,
     format="ICO",
-    sizes=[(s, s) for s in sizes],
-    append_images=imgs[1:],
+    sizes=sizes
 )
 
 print(f"[OK] ico generated: {dst}")
