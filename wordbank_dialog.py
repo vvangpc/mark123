@@ -62,10 +62,10 @@ class WordbankDialog(QDialog):
 
         # 顶部说明
         hint = QLabel(
-            "下表显示当前生效的错别字词库（每行 2 个条目，紧凑显示）。<br>"
+            "下表显示当前生效的错别字词库。<br>"
             "• <b>灰底</b>：内置规则（只读，可删除，删除仅对本机生效）<br>"
-            "• <b>白底</b>：用户自定义规则（可自由添加 / 修改 / 删除） · 保存后即生效  "
-            "<a href='#nlp' style='color:#0066cc;'>专业用户可增加离线 NLP 引擎 ▸</a>"
+            "• <b>白底</b>：用户自定义规则（可自由添加 / 修改 / 删除） · 保存后即生效<br>"
+            "<a href='#nlp' style='color:#0066cc;'>增加离线NLP引擎（专业用户）</a>"
         )
         hint.setTextFormat(Qt.TextFormat.RichText)
         hint.setWordWrap(True)
