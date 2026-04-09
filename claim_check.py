@@ -414,6 +414,10 @@ def check_antecedent_basis(claims: dict, n: int, ignore_set: set) -> list:
             term = "".join(term_chars)
             if term in ignore_set:
                 continue
+            # 若"所述"后紧跟的 n 字本身含停用字（如"第一/两侧/所述"），
+            # 视为虚词序列而非技术术语，不参与引用基础检查。
+            if _is_noisy_ngram(term):
+                continue
             if term not in cur_defined:
                 start = max(0, p - 8)
                 end = min(len(text), p + 2 + n + 8)
@@ -478,7 +482,11 @@ def check_term_consistency(claims: dict, n: int, ignore_set: set) -> list:
     for i, a in enumerate(terms):
         for b in terms[i + 1:]:
             if _similar(a, b):
-                # 只在两者都"频繁"出现时报警（避免噪声）：都至少出现 1 次（已满足）
+                # 降噪：要求至少一侧出现次数 ≥ 2。
+                # 纯 n 字滑窗极易产生「两个一次性二元组刚好差一字」的假阳性，
+                # 若任一侧重复出现，则更可能是真实术语的两种写法。
+                if max(term_locs[a]["count"], term_locs[b]["count"]) < 2:
+                    continue
                 pair = (a, b) if a < b else (b, a)
                 if pair in seen_pairs:
                     continue

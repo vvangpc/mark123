@@ -89,6 +89,55 @@ def _has_image(para) -> bool:
     return False
 
 
+def _trim_patent_title_from_claims(paragraphs, sections: dict) -> None:
+    """
+    把混入到"权利要求书"尾部的专利名称（说明书首页发明名称标题）修剪掉。
+
+    判定尾段是否为专利名称标题（需同时满足）：
+      • 非空；
+      • 不以权项序号 ^\\d+[.、．] 开头；
+      • 不含"所述"/"其特征"等权项常见结构词；
+      • 不以句读（。，；；,. ;）收尾；
+      • 长度小于 30 字（典型的专利名称多为十几字以内）。
+
+    若满足则连同其前的空段一并剪掉。为安全起见，最多只剪掉 3 个非空尾段。
+    """
+    if "权利要求书" not in sections:
+        return
+    sec = sections["权利要求书"]
+    new_end = sec.end_idx
+    trimmed_nonempty = 0
+    max_trim_nonempty = 3
+
+    while new_end > sec.start_idx:
+        text = paragraphs[new_end - 1].text.strip()
+        if not text:
+            # 尾部空段：直接跳过但不计入数量
+            new_end -= 1
+            continue
+
+        looks_like_claim = (
+            bool(re.match(r'^\s*\d+\s*[.、．]', text))
+            or text.endswith(("。", "，", "；", ";", ",", "."))
+            or ("其特征" in text)
+            or ("所述" in text)
+            or len(text) >= 30
+        )
+        if looks_like_claim:
+            break
+
+        # 视为专利名称标题，剪掉
+        new_end -= 1
+        trimmed_nonempty += 1
+        if trimmed_nonempty >= max_trim_nonempty:
+            break
+
+    if new_end != sec.end_idx and new_end > sec.start_idx:
+        sections["权利要求书"] = DocSection(
+            "权利要求书", sec.start_idx, new_end
+        )
+
+
 def _infer_abstract_boundary(paragraphs, sections: dict, title_positions: list):
     """
     后处理：如果"具体实施方式"的区间一直延伸到了文档末尾附近，  
@@ -282,7 +331,18 @@ def parse_document(doc_path: str) -> dict:
 
         sections[name] = DocSection(name, content_start, next_pos)
 
-    # 第三步（后处理）：修正"具体实施方式"可能吞掉"说明书摘要"的问题
+    # 第三步（后处理 A）：修剪"权利要求书"尾部混入的专利名称
+    # 许多专利文档中，权项最后一条与"技术领域"之间会夹一行【发明名称 / 专利
+    # 名称】（说明书首页标题），导致权利要求书区间把它当成最后一段保留。
+    # 判定尾段是否为专利名称标题：
+    #   • 非空
+    #   • 不以权项序号 \d+[.、．] 开头
+    #   • 不含"所述"/"其特征"等权项常用词
+    #   • 不以句读（。，；,. ;）收尾
+    #   • 长度小于 30 字（典型专利名称通常只有十几个字）
+    _trim_patent_title_from_claims(paragraphs, sections)
+
+    # 第三步（后处理 B）：修正"具体实施方式"可能吞掉"说明书摘要"的问题
     # 许多专利文档中,"说明书摘要"没有独立的标题段落，其正文直接跟在说明书附图
     # 的图片之后。此时"具体实施方式"区间会一路延伸到文档末尾，把摘要正文一并包含。
     # 解决策略：如果检测到"具体实施方式"且其范围延伸到文档末尾附近，从末尾向前
