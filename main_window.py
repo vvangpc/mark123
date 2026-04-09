@@ -11,10 +11,12 @@ from PyQt6.QtWidgets import (
     QStatusBar, QProgressBar, QFrame, QSplitter, QTabWidget,
     QGroupBox, QApplication, QCheckBox, QDialog, QSpinBox,
     QButtonGroup, QTableWidget, QTableWidgetItem, QHeaderView,
-    QScrollArea,
+    QScrollArea, QAbstractItemView,
 )
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QThread
-from PyQt6.QtGui import QDragEnterEvent, QDropEvent
+from PyQt6.QtGui import (
+    QDragEnterEvent, QDropEvent, QTextCursor, QTextCharFormat, QColor,
+)
 
 from doc_parser import parse_document, get_section_text
 from mark_extractor import extract_marks_from_paragraph, marks_to_display_text, parse_marks_from_display_text
@@ -35,6 +37,29 @@ from cleaner import (
 SUOSHU_ALLOWED_SECTIONS = ("权利要求书", "背景技术", "具体实施方式")
 # 默认勾选的章节
 SUOSHU_DEFAULT_CHECKED = ("具体实施方式",)
+
+
+def _longest_nonspace_run(s: str) -> str:
+    """从字符串中抽取最长的一段连续非空白字符（用作搜索锚点）。"""
+    if not s:
+        return ""
+    best = ""
+    cur_start = -1
+    for i, ch in enumerate(s):
+        if ch.isspace():
+            if cur_start >= 0:
+                seg = s[cur_start:i]
+                if len(seg) > len(best):
+                    best = seg
+                cur_start = -1
+        else:
+            if cur_start < 0:
+                cur_start = i
+    if cur_start >= 0:
+        seg = s[cur_start:]
+        if len(seg) > len(best):
+            best = seg
+    return best
 
 
 def _is_pycorrector_available() -> bool:
@@ -858,40 +883,50 @@ class MainWindow(QMainWindow):
 
         # ── 顶部工具栏 ──────────────────────────────────────
         toolbar = QHBoxLayout()
-        toolbar.setSpacing(8)
+        toolbar.setSpacing(10)
 
-        toolbar.addWidget(QLabel("滑窗字数 N:"))
+        # 检查字数选择栏：pill 式容器，左侧标签 + 6 个预设按钮 + 自定义框
+        n_bar = QFrame()
+        n_bar.setObjectName("claimNBar")
+        n_bar_layout = QHBoxLayout(n_bar)
+        n_bar_layout.setContentsMargins(10, 2, 10, 2)
+        n_bar_layout.setSpacing(6)
 
-        # 6 个预设按钮：2 / 3 / 4 / 5 / 6 / 7（独占，checkable）
+        n_label = QLabel("检查字数")
+        n_bar_layout.addWidget(n_label)
+
         self._claim_n_buttons = QButtonGroup(widget)
         self._claim_n_buttons.setExclusive(True)
         for val in (2, 3, 4, 5, 6, 7):
             b = QPushButton(str(val))
             b.setCheckable(True)
             b.setCursor(Qt.CursorShape.PointingHandCursor)
-            b.setFixedWidth(36)
             b.setObjectName("nPresetBtn")
             if val == 2:
                 b.setChecked(True)
-            # 使用默认参数绑定 val，避免闭包变量捕获问题
             b.clicked.connect(lambda _=False, v=val: self._on_claim_n_preset(v))
             self._claim_n_buttons.addButton(b, val)
-            toolbar.addWidget(b)
+            n_bar_layout.addWidget(b)
 
-        toolbar.addSpacing(4)
-        toolbar.addWidget(QLabel("自定义:"))
+        sep = QLabel("|")
+        sep.setStyleSheet("color: rgba(128,128,128,0.4); padding: 0 4px;")
+        n_bar_layout.addWidget(sep)
+
+        n_bar_layout.addWidget(QLabel("自定义"))
         self.claim_n_custom = QSpinBox()
+        self.claim_n_custom.setObjectName("nCustomSpin")
         self.claim_n_custom.setRange(2, 30)
         self.claim_n_custom.setValue(8)
-        self.claim_n_custom.setFixedWidth(64)
+        self.claim_n_custom.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.claim_n_custom.setToolTip(
-            "自定义 N 字数。任一数值变化都会把上方 6 个按钮全部取消选中，"
-            "并以自定义值为准。"
+            "自定义检查字数。数值变化会取消上方 6 个按钮的选中态，"
+            "以此处填入的数值为准。"
         )
         self.claim_n_custom.valueChanged.connect(self._on_claim_n_custom_changed)
-        toolbar.addWidget(self.claim_n_custom)
+        n_bar_layout.addWidget(self.claim_n_custom)
 
-        toolbar.addSpacing(10)
+        toolbar.addWidget(n_bar)
+        toolbar.addSpacing(6)
 
         self.claim_check_btn = QPushButton("▶  开始检查")
         self.claim_check_btn.setObjectName("accentBtn")
@@ -955,8 +990,8 @@ class MainWindow(QMainWindow):
         right_layout.setSpacing(6)
 
         right_hint = QLabel(
-            "表中仅展示问题，不会写入最终文件；在左侧预览框里手动改掉，"
-            "再次「开始检查」重扫，直到清零。"
+            "表中仅展示问题，不会写入最终文件；双击「上下文」可跳转到左侧预览框"
+            "对应位置并高亮；改完再次「开始检查」重扫，直到清零。"
         )
         right_hint.setObjectName("subtitleLabel")
         right_hint.setWordWrap(True)
@@ -974,6 +1009,10 @@ class MainWindow(QMainWindow):
         h.setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)
         self.claim_result_table.setAlternatingRowColors(True)
         self.claim_result_table.verticalHeader().setVisible(False)
+        # 双击「上下文」格（列 2） → 跳转并高亮左侧预览框对应位置
+        self.claim_result_table.cellDoubleClicked.connect(
+            self._on_claim_result_double_clicked
+        )
         right_layout.addWidget(self.claim_result_table, 1)
 
         self.claim_splitter.addWidget(right_panel)
@@ -2216,6 +2255,81 @@ class MainWindow(QMainWindow):
             btn.setCursor(Qt.CursorShape.PointingHandCursor)
             btn.clicked.connect(lambda _=False, r=row_idx: self._on_claim_ignore_row(r))
             self.claim_result_table.setCellWidget(row_idx, 4, btn)
+
+    def _on_claim_result_double_clicked(self, row: int, col: int):
+        """
+        双击结果表的「上下文」列：在左侧预览框定位到对应段落，并高亮关键片段。
+
+        定位策略：
+          1. 以结果的 para_idx 锚定 preview 中的行号
+          2. 尝试在该行文本里找到 context（去首尾空格）的最长非空白片段
+          3. 若找不到就整行选中
+        高亮用 QPlainTextEdit.ExtraSelection，下次双击时自动替换。
+        """
+        if col != 2:
+            return
+        if row < 0 or row >= len(self._claim_results):
+            return
+        if not self._claim_loaded or self._claim_start_idx is None:
+            return
+
+        item = self._claim_results[row]
+        para_idx = item.get("para_idx")
+        if para_idx is None or para_idx < 0:
+            return
+        line_no = para_idx - self._claim_start_idx
+        if line_no < 0 or line_no >= self._claim_para_count:
+            return
+
+        doc = self.claim_preview_edit.document()
+        block = doc.findBlockByNumber(line_no)
+        if not block.isValid():
+            return
+        line_text = block.text()
+
+        # 从 context 中抽一个"搜索锚"：取最长的非空白子串（通常是术语本身）
+        context = (item.get("context") or "").strip()
+        search_key = _longest_nonspace_run(context)
+
+        start_in_line = -1
+        if search_key:
+            start_in_line = line_text.find(search_key)
+        # 二次兜底：优先用术语字面量（从 message 里抽）
+        if start_in_line < 0:
+            import re as _re
+            msg = item.get("message", "")
+            m = _re.search(r'『所述(.+?)』', msg) or _re.search(r'『(.+?)』', msg)
+            if m:
+                search_key = m.group(1)
+                start_in_line = line_text.find(search_key)
+
+        cursor = QTextCursor(block)
+        if start_in_line >= 0 and search_key:
+            cursor.setPosition(block.position() + start_in_line)
+            cursor.setPosition(
+                block.position() + start_in_line + len(search_key),
+                QTextCursor.MoveMode.KeepAnchor,
+            )
+        else:
+            cursor.movePosition(QTextCursor.MoveOperation.StartOfBlock)
+            cursor.movePosition(
+                QTextCursor.MoveOperation.EndOfBlock,
+                QTextCursor.MoveMode.KeepAnchor,
+            )
+
+        # 持久高亮（QPlainTextEdit 的 ExtraSelection 类型来自 QTextEdit）
+        extra = QTextEdit.ExtraSelection()
+        fmt = QTextCharFormat()
+        fmt.setBackground(QColor("#ffd966"))  # 柔和黄
+        fmt.setForeground(QColor("#1a237e"))
+        extra.format = fmt
+        extra.cursor = QTextCursor(cursor)
+        self.claim_preview_edit.setExtraSelections([extra])
+
+        # 光标 + 滚动 + 聚焦
+        self.claim_preview_edit.setTextCursor(cursor)
+        self.claim_preview_edit.centerCursor()
+        self.claim_preview_edit.setFocus()
 
     def _on_claim_ignore_row(self, row: int):
         """
