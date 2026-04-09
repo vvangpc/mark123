@@ -38,9 +38,9 @@ def get_dup_ignore_path() -> str:
     return os.path.join(get_config_dir(), "dup_ignore_wordbank.json")
 
 
-def get_claim_ignore_path() -> str:
-    """权利要求书引用检查的忽略词库 JSON 路径"""
-    return os.path.join(get_config_dir(), "claim_ignore_wordbank.json")
+def get_vague_wordbank_path() -> str:
+    """权利要求书不确定用语词库 JSON 路径"""
+    return os.path.join(get_config_dir(), "vague_wordbank.json")
 
 
 # ─────────────────────────────────────────
@@ -185,11 +185,23 @@ def save_dup_ignore_list(items) -> None:
         json.dump(cleaned, f, ensure_ascii=False, indent=2)
 
 
-def load_claim_ignore_list() -> list:
-    """读取用户自定义的「权利要求书引用检查忽略词库」（去重字符串列表）"""
-    path = get_claim_ignore_path()
+def load_vague_wordbank() -> list:
+    """
+    读取「不确定用语词库」：权利要求书中不应出现的含糊用语（如约/大概/可能）。
+
+    - 若用户未曾保存过，则返回 claim_check.VAGUE_WORDBANK 的内置默认列表
+    - 若已存在用户文件，则以用户文件为准（用户可删除任意内置项）
+
+    返回：去重后的字符串列表
+    """
+    path = get_vague_wordbank_path()
     if not os.path.exists(path):
-        return []
+        # 首次使用：返回内置默认，交由上层按需持久化
+        try:
+            from claim_check import VAGUE_WORDBANK
+            return list(VAGUE_WORDBANK)
+        except Exception:
+            return []
     try:
         with open(path, "r", encoding="utf-8") as f:
             data = json.load(f)
@@ -207,9 +219,9 @@ def load_claim_ignore_list() -> list:
     return []
 
 
-def save_claim_ignore_list(items) -> None:
-    """保存权利要求书引用检查忽略词库"""
-    path = get_claim_ignore_path()
+def save_vague_wordbank(items) -> None:
+    """保存「不确定用语词库」"""
+    path = get_vague_wordbank_path()
     cleaned = []
     seen = set()
     for x in items:
@@ -219,6 +231,15 @@ def save_claim_ignore_list(items) -> None:
             cleaned.append(s)
     with open(path, "w", encoding="utf-8") as f:
         json.dump(cleaned, f, ensure_ascii=False, indent=2)
+
+
+def get_builtin_vague_wordbank() -> list:
+    """返回内置不确定用语词库（用于「恢复内置」按钮）"""
+    try:
+        from claim_check import VAGUE_WORDBANK
+        return list(VAGUE_WORDBANK)
+    except Exception:
+        return []
 
 
 def get_merged_wordbank() -> list:

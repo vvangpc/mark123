@@ -10,7 +10,8 @@ from PyQt6.QtWidgets import (
     QLabel, QTextEdit, QPlainTextEdit, QFileDialog, QMessageBox,
     QStatusBar, QProgressBar, QFrame, QSplitter, QTabWidget,
     QGroupBox, QApplication, QCheckBox, QDialog, QSpinBox,
-    QTableWidget, QTableWidgetItem, QHeaderView, QScrollArea
+    QButtonGroup, QTableWidget, QTableWidgetItem, QHeaderView,
+    QScrollArea,
 )
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QThread
 from PyQt6.QtGui import QDragEnterEvent, QDropEvent
@@ -283,6 +284,8 @@ class MainWindow(QMainWindow):
         self._claim_dirty = False          # 预览框是否有未确认修改
         self._claim_results = []           # 当前检查结果缓存
         self._claim_loaded = False         # 当前文档是否已加载过权利要求书内容
+        self._claim_n = 2                  # 当前滑窗字数（按钮 / 自定义共享）
+        self._claim_session_ignore = set() # 本次会话内结果行「忽略」记录（不持久化）
 
         # 配置管理器
         from config_manager import AppSettings
@@ -855,17 +858,40 @@ class MainWindow(QMainWindow):
 
         # ── 顶部工具栏 ──────────────────────────────────────
         toolbar = QHBoxLayout()
-        toolbar.setSpacing(10)
+        toolbar.setSpacing(8)
 
         toolbar.addWidget(QLabel("滑窗字数 N:"))
-        self.claim_n_spin = QSpinBox()
-        self.claim_n_spin.setRange(2, 6)
-        self.claim_n_spin.setValue(2)
-        self.claim_n_spin.setToolTip(
-            "用于「引用基础」「同一术语多种写法」的 N 字滑窗；\n"
-            "其它四项检查（引用关系/序号/多引/不确定用语）不受 N 影响。"
+
+        # 6 个预设按钮：2 / 3 / 4 / 5 / 6 / 7（独占，checkable）
+        self._claim_n_buttons = QButtonGroup(widget)
+        self._claim_n_buttons.setExclusive(True)
+        for val in (2, 3, 4, 5, 6, 7):
+            b = QPushButton(str(val))
+            b.setCheckable(True)
+            b.setCursor(Qt.CursorShape.PointingHandCursor)
+            b.setFixedWidth(36)
+            b.setObjectName("nPresetBtn")
+            if val == 2:
+                b.setChecked(True)
+            # 使用默认参数绑定 val，避免闭包变量捕获问题
+            b.clicked.connect(lambda _=False, v=val: self._on_claim_n_preset(v))
+            self._claim_n_buttons.addButton(b, val)
+            toolbar.addWidget(b)
+
+        toolbar.addSpacing(4)
+        toolbar.addWidget(QLabel("自定义:"))
+        self.claim_n_custom = QSpinBox()
+        self.claim_n_custom.setRange(2, 30)
+        self.claim_n_custom.setValue(8)
+        self.claim_n_custom.setFixedWidth(64)
+        self.claim_n_custom.setToolTip(
+            "自定义 N 字数。任一数值变化都会把上方 6 个按钮全部取消选中，"
+            "并以自定义值为准。"
         )
-        toolbar.addWidget(self.claim_n_spin)
+        self.claim_n_custom.valueChanged.connect(self._on_claim_n_custom_changed)
+        toolbar.addWidget(self.claim_n_custom)
+
+        toolbar.addSpacing(10)
 
         self.claim_check_btn = QPushButton("▶  开始检查")
         self.claim_check_btn.setObjectName("accentBtn")
@@ -874,10 +900,13 @@ class MainWindow(QMainWindow):
         self.claim_check_btn.clicked.connect(self._on_claim_check_start)
         toolbar.addWidget(self.claim_check_btn)
 
-        self.claim_ignore_btn = QPushButton("🙈  忽略词库")
+        self.claim_ignore_btn = QPushButton("📕  不确定用语词库")
         self.claim_ignore_btn.setObjectName("smallBtn")
         self.claim_ignore_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.claim_ignore_btn.setToolTip("编辑权利要求书检查专用的忽略词库")
+        self.claim_ignore_btn.setToolTip(
+            "编辑权利要求书中「不应出现」的不确定 / 含糊用语词库\n"
+            "（约、大概、可能、优选…），可增删、导入导出、恢复内置。"
+        )
         self.claim_ignore_btn.clicked.connect(self._on_claim_ignore_dialog)
         toolbar.addWidget(self.claim_ignore_btn)
 
@@ -1994,10 +2023,35 @@ class MainWindow(QMainWindow):
     # 权利要求书检查 Tab — 槽函数
     # ═══════════════════════════════════════════════════
 
+    def _on_claim_n_preset(self, value: int):
+        """点击 N 预设按钮：更新当前 N 值，并清空自定义框的"高亮态"。"""
+        self._claim_n = int(value)
+        # 自定义框的值不影响当前 N，但为 UX 一致把它设回与按钮相同的值
+        self.claim_n_custom.blockSignals(True)
+        self.claim_n_custom.setValue(int(value))
+        self.claim_n_custom.blockSignals(False)
+
+    def _on_claim_n_custom_changed(self, value: int):
+        """自定义 N 字数变化：取消所有按钮选中，以自定义值为准。"""
+        # 如果恰好是 2~7，且已经在对应按钮上，就让按钮保持选中态一致
+        btn = self._claim_n_buttons.button(int(value))
+        if btn is not None:
+            btn.setChecked(True)
+        else:
+            # 清空独占组的选中态（QButtonGroup exclusive 不允许全部未选，
+            # 所以先切 exclusive 为 False，清空，再切回 True）
+            self._claim_n_buttons.setExclusive(False)
+            for b in self._claim_n_buttons.buttons():
+                b.setChecked(False)
+            self._claim_n_buttons.setExclusive(True)
+        self._claim_n = int(value)
+
     def _claim_tab_load_from_doc(self):
         """_load_document 成功后：把权利要求书章节填入预览框。"""
         if not self.doc_data:
             return
+        # 新文档加载 → 清空本次会话的忽略记录
+        self._claim_session_ignore = set()
         sections = self.doc_data.get('sections', {})
         section = sections.get('权利要求书')
         if section is None:
@@ -2097,15 +2151,16 @@ class MainWindow(QMainWindow):
 
         try:
             from claim_check import run_all_checks
-            from config_manager import load_claim_ignore_list
-            ignore_set = set(load_claim_ignore_list())
-            n = int(self.claim_n_spin.value())
+            from config_manager import load_vague_wordbank
+            vague_words = load_vague_wordbank()
+            n = int(self._claim_n)
             results = run_all_checks(
                 shell_paragraphs,
                 self._claim_start_idx,
                 self._claim_end_idx,
                 n=n,
-                ignore_set=ignore_set,
+                ignore_set=set(self._claim_session_ignore),
+                vague_words=vague_words,
             )
         except Exception as e:
             import traceback as tb
@@ -2163,44 +2218,54 @@ class MainWindow(QMainWindow):
             self.claim_result_table.setCellWidget(row_idx, 4, btn)
 
     def _on_claim_ignore_row(self, row: int):
-        """点击行内「忽略」：把该行相关的 ngram 加入忽略词库并从表格移除"""
+        """
+        点击行内「忽略」：本次会话忽略。不写入任何持久词库。
+
+        - 从 message 中解析出术语（antecedent 的『所述X』里的 X；term 的两个相似词）
+        - 加入 self._claim_session_ignore（仅当次会话有效，新开文档即清空）
+        - 同类型且术语相同的其它行一并移除
+        - vague / dependency / numbering 等其它类型的"忽略"只是从表格里移除该行
+        """
         if row < 0 or row >= len(self._claim_results):
             return
         item = self._claim_results[row]
         kind = item.get("kind")
-        # 仅术语类（antecedent / term）需要加词；其它直接从表中移除
-        to_add = None
+        msg = item.get("message", "")
+        import re as _re
+
+        session_adds = []
         if kind == "antecedent":
-            msg = item.get("message", "")
-            # 从 message 抓『所述X』里的 X
-            import re as _re
             m = _re.search(r'『所述(.+?)』', msg)
             if m:
-                to_add = m.group(1)
+                session_adds.append(m.group(1))
         elif kind == "term":
-            msg = item.get("message", "")
-            import re as _re
             m = _re.search(r'『(.+?)』与『(.+?)』', msg)
             if m:
-                to_add = [m.group(1), m.group(2)]
+                session_adds.extend([m.group(1), m.group(2)])
 
-        if to_add:
-            try:
-                from config_manager import load_claim_ignore_list, save_claim_ignore_list
-                current = load_claim_ignore_list()
-                cur_set = set(current)
-                adds = [to_add] if isinstance(to_add, str) else to_add
-                for w in adds:
-                    if w and w not in cur_set:
-                        current.append(w)
-                        cur_set.add(w)
-                save_claim_ignore_list(current)
-                self._show_toast(f"已加入忽略词库：{'、'.join(adds) if isinstance(to_add, list) else to_add}", "info")
-            except Exception as e:
-                self._show_toast(f"写入忽略词库失败：{e}", "error")
+        for w in session_adds:
+            if w:
+                self._claim_session_ignore.add(w)
 
-        # 从本地结果中移除并重渲染
-        self._claim_results.pop(row)
+        if session_adds:
+            self._show_toast(
+                f"本次忽略：{'、'.join(session_adds)}（未加入词库）",
+                "info",
+            )
+
+        # 移除本行；若是术语类，顺带把剩余结果里同术语的同类型行也清掉，
+        # 免得用户点一下还要再点一堆
+        removed_indices = {row}
+        if session_adds:
+            for i, r in enumerate(self._claim_results):
+                if i == row or r.get("kind") != kind:
+                    continue
+                r_msg = r.get("message", "")
+                if any(w and w in r_msg for w in session_adds):
+                    removed_indices.add(i)
+        self._claim_results = [
+            r for i, r in enumerate(self._claim_results) if i not in removed_indices
+        ]
         self._render_claim_results(self._claim_results)
         self._update_claim_status_bar()
 

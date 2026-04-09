@@ -453,28 +453,56 @@ def _similar(a: str, b: str) -> bool:
 
 def check_term_consistency(claims: dict, n: int, ignore_set: set) -> list:
     """
-    在整个权利要求书范围内统计所有 n 字 CJK 子串，找出"仅一字之差"的组。
-    将这些组作为"同一术语多种写法"疑点上报。
+    只收集「所述」后紧跟的 n 字 CJK 术语，在权利要求书范围内找出相似对
+    （长度相同且仅一字之差），作为"同一术语多种写法"疑点上报。
+
+    之所以只看「所述」后面：
+      • 这是权利要求书中"反向引用"的标准句式，"所述X"里的 X 必然是一个
+        已定义的术语，天然排除了 n 字滑窗扫全文带来的大量噪声；
+      • 代理人撰写时最常见的术语漂移（如"齿圈"/"齿环"）就发生在"所述"后。
     """
     ignore_set = set(ignore_set or ())
-    # 汇总所有 n 字子串与其第一次出现位置（claim_no, para_idx, context）
-    term_locs: dict = {}  # term -> list[(claim_no, para_idx, context)]
+    # term -> {count, first: (claim_no, para_idx, context)}
+    term_locs: dict = {}
+
     for no in sorted(claims.keys()):
         info = claims[no]
         text = info.text
-        for seg, idx in _sliding_cjk_ngrams(text, n, skip_noise=True):
-            if seg in ignore_set:
+        # 找所有"所述"且不在"权利要求N所述"引用公式里
+        suoshu_positions = [
+            m.start() for m in re.finditer(r'所述', text)
+            if not _is_in_citation_formula(text, m.start())
+        ]
+        for p in suoshu_positions:
+            # 紧跟"所述"的 n 个 CJK 字组成术语
+            term_chars = []
+            for k in range(p + 2, len(text)):
+                ch = text[k]
+                if _CJK_RE.match(ch):
+                    term_chars.append(ch)
+                    if len(term_chars) == n:
+                        break
+                else:
+                    break
+            if len(term_chars) < n:
                 continue
-            if seg not in term_locs:
-                start = max(0, idx - 10)
-                end = min(len(text), idx + n + 10)
+            term = "".join(term_chars)
+            if term in ignore_set:
+                continue
+            # 含停用字（如"第一/两侧"）视为虚词序列，不参与术语一致性
+            if _is_noisy_ngram(term):
+                continue
+
+            if term not in term_locs:
+                start = max(0, p - 8)
+                end = min(len(text), p + 2 + n + 8)
                 ctx = text[start:end].replace("\n", " ")
-                term_locs[seg] = {
+                term_locs[term] = {
                     "count": 1,
                     "first": (no, info.para_indices[0] if info.para_indices else -1, ctx),
                 }
             else:
-                term_locs[seg]["count"] += 1
+                term_locs[term]["count"] += 1
 
     results = []
     seen_pairs = set()
@@ -482,11 +510,6 @@ def check_term_consistency(claims: dict, n: int, ignore_set: set) -> list:
     for i, a in enumerate(terms):
         for b in terms[i + 1:]:
             if _similar(a, b):
-                # 降噪：要求至少一侧出现次数 ≥ 2。
-                # 纯 n 字滑窗极易产生「两个一次性二元组刚好差一字」的假阳性，
-                # 若任一侧重复出现，则更可能是真实术语的两种写法。
-                if max(term_locs[a]["count"], term_locs[b]["count"]) < 2:
-                    continue
                 pair = (a, b) if a < b else (b, a)
                 if pair in seen_pairs:
                     continue
