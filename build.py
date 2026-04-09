@@ -20,6 +20,7 @@ def build():
         sys.executable, "-m", "PyInstaller",
         "--onefile",                    # 单文件模式
         "--windowed",                   # 窗口模式（不显示控制台）
+        "--icon", os.path.join(base_dir, "app_icon.ico"),  # 应用图标
         "--name", "专利标记助手",         # exe 文件名
         "--noconfirm",                  # 覆盖输出目录
         "--clean",                      # 清理缓存
