@@ -206,12 +206,30 @@ class CleanWorker(QThread):
             elif self.action == "orphan":
                 marks = self.kwargs.get("marks", {})
                 orphans = detect_orphan_marks(paragraphs, sections, marks)
+                self.progress.emit(60)
+                from cleaner import detect_orphan_figures
+                missing_figs = detect_orphan_figures(paragraphs, sections)
                 self.progress.emit(100)
+
+                parts = []
                 if orphans:
                     lines = [f"  {num} — {name}" for num, name in orphans]
-                    msg = "⚠️ 发现以下孤立附图标记（附图说明有、具体实施方式无）：\n" + "\n".join(lines)
+                    parts.append(
+                        "⚠️ 孤立附图标记（附图说明有、具体实施方式无）：\n"
+                        + "\n".join(lines)
+                    )
                 else:
-                    msg = "✅ 未发现孤立附图标记，所有标记均在具体实施方式中出现"
+                    parts.append("✅ 附图标记：所有标记均在具体实施方式中出现")
+
+                if missing_figs:
+                    fig_lines = "、".join(f"图{n}" for n in missing_figs)
+                    parts.append(
+                        f"⚠️ 未引用图编号（附图说明提及但具体实施方式未出现）：{fig_lines}"
+                    )
+                else:
+                    parts.append("✅ 图编号：附图说明中的图编号均在具体实施方式中出现")
+
+                msg = "\n".join(parts)
                 self.finished.emit(msg)
 
             elif self.action == "typo_check":
@@ -749,7 +767,12 @@ class MainWindow(QMainWindow):
         v = QVBoxLayout(group)
         v.setSpacing(8)
 
-        hint = QLabel("找出「附图说明中提及、但具体实施方式中未出现」的标记编号。\n该功能仅做检测，不会修改文档。")
+        hint = QLabel(
+            "找出「附图说明中提及、但具体实施方式中未出现」的内容，包括：\n"
+            "  • 附图标记名称（如齿圈、夹指…）\n"
+            "  • 图编号（如图1、图5…）\n"
+            "该功能仅做检测，不会修改文档。"
+        )
         hint.setObjectName("subtitleLabel")
         hint.setWordWrap(True)
         v.addWidget(hint)
@@ -991,7 +1014,8 @@ class MainWindow(QMainWindow):
 
         right_hint = QLabel(
             "表中仅展示问题，不会写入最终文件；双击「上下文」可跳转到左侧预览框"
-            "对应位置并高亮；改完再次「开始检查」重扫，直到清零。"
+            "对应位置并高亮；双击「说明」可弹出完整描述；改完再次「开始检查」"
+            "重扫，直到清零。"
         )
         right_hint.setObjectName("subtitleLabel")
         right_hint.setWordWrap(True)
@@ -2256,19 +2280,87 @@ class MainWindow(QMainWindow):
             btn.clicked.connect(lambda _=False, r=row_idx: self._on_claim_ignore_row(r))
             self.claim_result_table.setCellWidget(row_idx, 4, btn)
 
+    def _show_claim_result_detail(self, row: int):
+        """弹出只读对话框显示指定结果行的完整字段（避免 elide 截断）。"""
+        if row < 0 or row >= len(self._claim_results):
+            return
+        item = self._claim_results[row]
+        kind_map = {
+            "antecedent": "引用基础",
+            "dependency": "引用关系",
+            "term": "术语一致性",
+            "vague": "不确定用语",
+            "numbering": "独立权项序号",
+            "multi_dep": "多项引用合法性",
+        }
+        kind_label = kind_map.get(item.get("kind"), item.get("kind") or "—")
+        claim_no = item.get("claim_no")
+        claim_label = f"权利要求{claim_no}" if claim_no else "—"
+        context = item.get("context") or ""
+        message = item.get("message") or ""
+        suggestion = item.get("suggestion") or ""
+
+        dlg = QDialog(self)
+        dlg.setWindowTitle("问题详情")
+        dlg.setMinimumSize(560, 360)
+        dlg.setModal(True)
+
+        lay = QVBoxLayout(dlg)
+        lay.setSpacing(10)
+
+        meta = QLabel(f"<b>类型：</b>{kind_label}　　<b>位置：</b>{claim_label}")
+        meta.setTextFormat(Qt.TextFormat.RichText)
+        lay.addWidget(meta)
+
+        lay.addWidget(QLabel("上下文："))
+        ctx_view = QPlainTextEdit()
+        ctx_view.setReadOnly(True)
+        ctx_view.setPlainText(context)
+        ctx_view.setMaximumHeight(90)
+        lay.addWidget(ctx_view)
+
+        lay.addWidget(QLabel("说明："))
+        msg_view = QPlainTextEdit()
+        msg_view.setReadOnly(True)
+        msg_view.setPlainText(message)
+        lay.addWidget(msg_view, 1)
+
+        if suggestion:
+            lay.addWidget(QLabel("建议："))
+            sug_view = QPlainTextEdit()
+            sug_view.setReadOnly(True)
+            sug_view.setPlainText(suggestion)
+            sug_view.setMaximumHeight(80)
+            lay.addWidget(sug_view)
+
+        btn_row = QHBoxLayout()
+        btn_row.addStretch()
+        close_btn = QPushButton("关闭")
+        close_btn.clicked.connect(dlg.accept)
+        btn_row.addWidget(close_btn)
+        lay.addLayout(btn_row)
+
+        dlg.exec()
+
     def _on_claim_result_double_clicked(self, row: int, col: int):
         """
-        双击结果表的「上下文」列：在左侧预览框定位到对应段落，并高亮关键片段。
+        双击结果表：
+          - 第 2 列「上下文」→ 在左侧预览框定位到对应段落并高亮关键片段
+          - 第 3 列「说明」  → 弹出完整说明对话框（避免 elide 显示不全）
+          - 其它列           → 不响应
 
-        定位策略：
+        上下文定位策略：
           1. 以结果的 para_idx 锚定 preview 中的行号
           2. 尝试在该行文本里找到 context（去首尾空格）的最长非空白片段
           3. 若找不到就整行选中
         高亮用 QPlainTextEdit.ExtraSelection，下次双击时自动替换。
         """
-        if col != 2:
-            return
         if row < 0 or row >= len(self._claim_results):
+            return
+        if col == 3:
+            self._show_claim_result_detail(row)
+            return
+        if col != 2:
             return
         if not self._claim_loaded or self._claim_start_idx is None:
             return

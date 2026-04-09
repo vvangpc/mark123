@@ -240,6 +240,60 @@ def detect_orphan_marks(paragraphs, sections: dict, marks: dict) -> list:
     return orphans
 
 
+def _get_section_text(paragraphs, sections: dict, section_name: str) -> str:
+    """拼接指定章节的段落文本（空字符串安全）。"""
+    section = sections.get(section_name)
+    if section is None:
+        return ""
+    return " ".join(
+        paragraphs[i].text
+        for i in range(section.start_idx, section.end_idx)
+        if 0 <= i < len(paragraphs)
+    )
+
+
+# 匹配 "图1" / "图 1" / "图1a" / "图1A" / "图1-2" / "图1（a）" / "图1(a)" 等形式；
+# 核心编号只取阿拉伯数字，字母 / 括号后缀作为同编号的子图统一纳入该编号。
+_FIGURE_REF_PATTERN = re.compile(
+    r'图\s*(\d+)(?:\s*[-－–\u2013]\s*\d+)?(?:\s*[a-zA-Z])?'
+)
+
+
+def detect_orphan_figures(paragraphs, sections: dict) -> list:
+    """
+    找出「在附图说明中被提及、但在具体实施方式中没有出现」的图编号。
+
+    例如附图说明写了『图 5 为 …』，若具体实施方式全篇没有『图5』字样，
+    则图 5 属于孤立图编号，需要提醒代理人补写。
+
+    参数:
+        paragraphs: 全文段落列表
+        sections:   解析后的章节字典
+
+    返回:
+        [图编号:int, ...]，按编号升序
+    """
+    caption_text = _get_section_text(paragraphs, sections, "附图说明")
+    impl_text = _get_section_text(paragraphs, sections, "具体实施方式")
+    if not caption_text:
+        return []
+
+    caption_nums = {
+        int(m.group(1))
+        for m in _FIGURE_REF_PATTERN.finditer(caption_text)
+    }
+    if not caption_nums:
+        return []
+
+    impl_nums = {
+        int(m.group(1))
+        for m in _FIGURE_REF_PATTERN.finditer(impl_text)
+    } if impl_text else set()
+
+    missing = sorted(n for n in caption_nums if n not in impl_nums)
+    return missing
+
+
 # ─────────────────────────────────────────
 # 4. 错别字检查
 # ─────────────────────────────────────────
