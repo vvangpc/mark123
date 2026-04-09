@@ -1,8 +1,14 @@
 # -*- coding: utf-8 -*-
 """
-claim_ignore_dialog.py — 权利要求书引用检查忽略词库编辑器
-- 用户添加到此列表中的字 / 词，将在「引用基础检查」「同一术语多种写法检查」中被忽略
-- 支持搜索 / 添加 / 删除 / 导入 / 导出
+claim_ignore_dialog.py — 不确定用语词库编辑器
+
+维护权利要求书中"不应出现"的含糊 / 不确定用语（例如：约、大概、可能、
+左右、优选…）。勾选「开始检查」时，会把这些词当作 `vague` 类问题报出。
+
+- 首次打开：自动以内置默认列表填充；
+- 用户可增删、导入、导出；
+- 「恢复内置」按钮把内置词合并回当前列表；
+- 保存时会持久化到 `~/.config/PatentMarker/vague_wordbank.json`。
 """
 import json
 from PyQt6.QtWidgets import (
@@ -11,19 +17,25 @@ from PyQt6.QtWidgets import (
     QAbstractItemView,
 )
 
-from config_manager import load_claim_ignore_list, save_claim_ignore_list
+from config_manager import (
+    load_vague_wordbank, save_vague_wordbank, get_builtin_vague_wordbank,
+)
 
 
 class ClaimIgnoreDialog(QDialog):
-    """权利要求书引用检查忽略词库编辑器"""
+    """不确定用语词库编辑器
+
+    类名保留 `ClaimIgnoreDialog` 是为了兼容历史导入；其作用已变为
+    「权利要求书中不应出现的不确定用语」词库的编辑。
+    """
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("权利要求书检查 — 忽略词库")
-        self.setMinimumSize(480, 560)
+        self.setWindowTitle("不确定用语忽略词库")
+        self.setMinimumSize(520, 600)
         self.setModal(True)
 
-        self._items: list = list(load_claim_ignore_list())
+        self._items: list = list(load_vague_wordbank())
         self._search_text: str = ""
 
         self._build_ui()
@@ -34,11 +46,12 @@ class ClaimIgnoreDialog(QDialog):
         layout.setSpacing(10)
 
         hint = QLabel(
-            "添加到此处的字 / 词，在以下两项检查中将被忽略：\n"
-            "• 引用基础检查（antecedent basis）\n"
-            "• 同一术语多种写法检查\n"
-            "例如：将「技术」「所述」等常见噪声词加入忽略后，不再被误报。\n"
-            "保存后下次点「开始检查」即生效。"
+            "此词库列出权利要求书中「不应出现」的不确定 / 含糊用语。\n"
+            "「开始检查」时，这些词一旦出现在权利要求书中，就会在右侧结果表里以\n"
+            "「不确定用语」类型报出。\n\n"
+            "• 内置默认已包含常见词（约、大概、可能、优选、左右…）\n"
+            "• 可自由增删 / 导入 / 导出；点「恢复内置」可把默认词合并回来\n"
+            "• 保存后下次点「开始检查」即生效"
         )
         hint.setWordWrap(True)
         layout.addWidget(hint)
@@ -59,7 +72,7 @@ class ClaimIgnoreDialog(QDialog):
         add_row = QHBoxLayout()
         add_row.addWidget(QLabel("➕ 添加："))
         self.add_edit = QLineEdit()
-        self.add_edit.setPlaceholderText("输入要忽略的字 / 词后按回车或点「添加」")
+        self.add_edit.setPlaceholderText("输入要检测的不确定用语后按回车或点「添加」")
         self.add_edit.returnPressed.connect(self._on_add_clicked)
         add_row.addWidget(self.add_edit, 1)
         add_btn = QPushButton("添加")
@@ -80,6 +93,11 @@ class ClaimIgnoreDialog(QDialog):
         del_btn = QPushButton("🗑️ 删除选中")
         del_btn.clicked.connect(self._on_delete_clicked)
         btn_row.addWidget(del_btn)
+
+        restore_btn = QPushButton("🔄 恢复内置")
+        restore_btn.setToolTip("把缺失的内置默认词合并回当前列表（不会删除已有条目）")
+        restore_btn.clicked.connect(self._on_restore_defaults)
+        btn_row.addWidget(restore_btn)
 
         import_btn = QPushButton("📥 导入…")
         import_btn.setToolTip("从 JSON / TXT 文件导入（TXT 每行一个词）")
@@ -136,7 +154,7 @@ class ClaimIgnoreDialog(QDialog):
         if not text:
             return
         if text in self._items:
-            QMessageBox.information(self, "已存在", f"「{text}」已在忽略列表中。")
+            QMessageBox.information(self, "已存在", f"「{text}」已在词库中。")
             self.add_edit.clear()
             return
         self._items.insert(0, text)
@@ -155,24 +173,43 @@ class ClaimIgnoreDialog(QDialog):
         self._items = [s for s in self._items if s not in to_remove]
         self._rebuild_list()
 
+    def _on_restore_defaults(self):
+        builtin = get_builtin_vague_wordbank()
+        existing = set(self._items)
+        added = 0
+        for w in builtin:
+            if w and w not in existing:
+                self._items.append(w)
+                existing.add(w)
+                added += 1
+        self._rebuild_list()
+        if added:
+            QMessageBox.information(
+                self, "已合并", f"新增 {added} 条内置默认词。"
+            )
+        else:
+            QMessageBox.information(
+                self, "无变化", "当前列表已包含所有内置默认词。"
+            )
+
     def _on_save(self):
         try:
-            save_claim_ignore_list(self._items)
+            save_vague_wordbank(self._items)
         except Exception as e:
             QMessageBox.critical(self, "保存失败", f"无法写入文件：\n{e}")
             return
         QMessageBox.information(
             self, "已保存",
-            f"忽略词库已保存，共 {len(self._items)} 条。\n下次点「开始检查」即生效。"
+            f"不确定用语词库已保存，共 {len(self._items)} 条。\n下次点「开始检查」即生效。"
         )
         self.accept()
 
     def _on_export(self):
         if not self._items:
-            QMessageBox.information(self, "无内容", "当前忽略词库为空。")
+            QMessageBox.information(self, "无内容", "当前词库为空。")
             return
         path, selected_filter = QFileDialog.getSaveFileName(
-            self, "导出忽略词库", "claim_ignore.json",
+            self, "导出不确定用语词库", "vague_wordbank.json",
             "JSON 文件 (*.json);;文本文件 (*.txt);;所有文件 (*)"
         )
         if not path:
@@ -196,7 +233,7 @@ class ClaimIgnoreDialog(QDialog):
 
     def _on_import(self):
         path, _ = QFileDialog.getOpenFileName(
-            self, "导入忽略词库", "",
+            self, "导入不确定用语词库", "",
             "词库文件 (*.json *.txt);;JSON 文件 (*.json);;文本文件 (*.txt);;所有文件 (*)"
         )
         if not path:
