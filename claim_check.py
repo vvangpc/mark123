@@ -428,7 +428,7 @@ def check_antecedent_basis(claims: dict, n: int, ignore_set: set) -> list:
                     "para_idx": info.para_indices[0] if info.para_indices else -1,
                     "context": ctx,
                     "message": (
-                        f"权利要求 {no} 中『所述{term}』缺少引用基础"
+                        f"『所述{term}』缺少引用基础"
                         f"（在本权项及所引用的前序权项中未找到对『{term}』的首次定义）"
                     ),
                     "suggestion": "",
@@ -534,9 +534,10 @@ def check_term_consistency(claims: dict, n: int, ignore_set: set) -> list:
 # 聚合入口
 # ─────────────────────────────────────────
 def run_all_checks(paragraphs, start_idx: int, end_idx: int,
-                   n: int, ignore_set=None, vague_words=None) -> list:
+                   n: int, ignore_set=None, vague_words=None,
+                   check_term: bool = False) -> list:
     """
-    一次性运行全部 6 项检查，返回合并后的结果列表。
+    一次性运行全部检查，返回合并后的结果列表。
 
     参数:
         paragraphs:   全文段落列表（python-docx Paragraph 对象）
@@ -544,6 +545,8 @@ def run_all_checks(paragraphs, start_idx: int, end_idx: int,
         n:            术语类检查的滑窗字数（2~6）
         ignore_set:   用户自定义忽略词集合（仅作用于术语类检查）
         vague_words:  覆盖默认 VAGUE_WORDBANK
+        check_term:   是否执行「术语不一致」检查；默认 False，因为该检查
+                      噪音较大，只有用户在 UI 中明确勾选时才会运行
     """
     claims = parse_claims(paragraphs, start_idx, end_idx)
     if not claims:
@@ -555,7 +558,8 @@ def run_all_checks(paragraphs, start_idx: int, end_idx: int,
     results.extend(check_claim_numbering(claims))
     results.extend(check_vague_terms(claims, vague_words))
     results.extend(check_antecedent_basis(claims, n, ignore_set or set()))
-    results.extend(check_term_consistency(claims, n, ignore_set or set()))
+    if check_term:
+        results.extend(check_term_consistency(claims, n, ignore_set or set()))
 
     # 按 claim_no、para_idx 排序以稳定输出
     def sort_key(r):

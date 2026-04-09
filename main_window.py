@@ -566,6 +566,16 @@ class MainWindow(QMainWindow):
         self.generate_btn.clicked.connect(self._on_generate_file)
         action_layout.addWidget(self.generate_btn)
 
+        # 「打开文件所在目录」勾选框：默认不勾选，避免自动弹资源管理器
+        self.open_dir_cb = QCheckBox("打开文件所在目录")
+        self.open_dir_cb.setChecked(False)
+        self.open_dir_cb.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.open_dir_cb.setToolTip(
+            "勾选后，文件生成成功时会自动打开输出目录。\n"
+            "默认不勾选，避免频繁弹窗打断工作。"
+        )
+        action_layout.addWidget(self.open_dir_cb)
+
         layout.addLayout(action_layout)
 
         # ── 下方：左日志 / 右历史 双栏 ───────────────────
@@ -968,6 +978,17 @@ class MainWindow(QMainWindow):
         self.claim_ignore_btn.clicked.connect(self._on_claim_ignore_dialog)
         toolbar.addWidget(self.claim_ignore_btn)
 
+        # 「术语不一致」检查的开关：该检查噪音较大，默认关闭
+        self.claim_term_cb = QCheckBox("检查术语不一致")
+        self.claim_term_cb.setChecked(False)
+        self.claim_term_cb.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.claim_term_cb.setToolTip(
+            "启用「同一术语多种写法」检查。\n"
+            "该检查以『所述』后面的 N 字术语作为锚点，可能产生一定噪音，\n"
+            "默认不启用；需要做权利要求书术语一致性复盘时再勾选。"
+        )
+        toolbar.addWidget(self.claim_term_cb)
+
         toolbar.addStretch()
 
         self.claim_status_label = QLabel("请先打开 docx 文件")
@@ -1028,9 +1049,14 @@ class MainWindow(QMainWindow):
         h = self.claim_result_table.horizontalHeader()
         h.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
         h.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
-        h.setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
-        h.setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
+        # 上下文 / 说明 两列改为 Interactive：用户可以左右拖动分界线调节宽度
+        h.setSectionResizeMode(2, QHeaderView.ResizeMode.Interactive)
+        h.setSectionResizeMode(3, QHeaderView.ResizeMode.Interactive)
         h.setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)
+        # 给一个合理的初始宽度，避免 Interactive 模式下列宽为 0
+        self.claim_result_table.setColumnWidth(2, 260)
+        self.claim_result_table.setColumnWidth(3, 320)
+        h.setStretchLastSection(False)
         self.claim_result_table.setAlternatingRowColors(True)
         self.claim_result_table.verticalHeader().setVisible(False)
         # 双击「上下文」格（列 2） → 跳转并高亮左侧预览框对应位置
@@ -1550,7 +1576,8 @@ class MainWindow(QMainWindow):
             if reply != QMessageBox.StandardButton.Yes:
                 return
 
-        output_path = self._generate_output_path()
+        action_name = self._infer_output_action_name()
+        output_path = self._generate_output_path(action_name)
         try:
             self.doc_data['document'].save(output_path)
         except PermissionError:
@@ -1569,13 +1596,12 @@ class MainWindow(QMainWindow):
         self.status_bar.showMessage(f"文件已生成 — {os.path.basename(output_path)}")
         self._show_toast("文件生成成功！", "success")
 
-        reply = QMessageBox.information(
+        QMessageBox.information(
             self, "文件生成完成",
-            f"文件已保存至：\n\n{output_path}\n\n是否打开文件所在目录？",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.Yes,
+            f"文件已保存至：\n\n{output_path}",
+            QMessageBox.StandardButton.Ok,
         )
-        if reply == QMessageBox.StandardButton.Yes:
+        if self.open_dir_cb.isChecked():
             try:
                 os.startfile(os.path.dirname(output_path))
             except Exception:
@@ -1683,6 +1709,23 @@ class MainWindow(QMainWindow):
             base_name = base_name.rsplit("_", 1)[0]
         output_name = f"{base_name}_{action_name}.docx"
         return os.path.join(dir_name, output_name)
+
+    def _infer_output_action_name(self) -> str:
+        """
+        根据操作历史判断输出文件后缀：
+          • 最近一次「标注 / 删除标记」动作决定后缀；
+          • 若最后一次是「删除标记」→「_已清洗」；
+          • 若最后一次是「标注」或没有相关动作 → 「_已标注」。
+        历史里夹杂的清洗 / 错别字 / 权利要求书修改等不影响判断，
+        只有「标注 / 删除标记」这两个互斥动作起决定作用。
+        """
+        for entry in reversed(self.history_entries):
+            summary = (entry.get("summary") or "").strip()
+            if summary.startswith("删除标记"):
+                return "已清洗"
+            if summary.startswith("标注"):
+                return "已标注"
+        return "已标注"
 
     def _set_buttons_enabled(self, enabled: bool):
         """设置标注操作按钮状态"""
@@ -2224,6 +2267,7 @@ class MainWindow(QMainWindow):
                 n=n,
                 ignore_set=set(self._claim_session_ignore),
                 vague_words=vague_words,
+                check_term=self.claim_term_cb.isChecked(),
             )
         except Exception as e:
             import traceback as tb
