@@ -335,6 +335,91 @@ QSplitter::handle {
 QSplitter::handle:hover {
     background-color: #00bfa5;
 }
+
+/* ===== 检查字数选择栏（claim 检查 Tab） ===== */
+QFrame#claimNBar {
+    background-color: rgba(255, 255, 255, 0.04);
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    border-radius: 18px;
+    padding: 4px 10px;
+}
+
+QFrame#claimNBar QLabel {
+    color: #9e9e9e;
+    font-size: 13px;
+    padding: 0 2px;
+}
+
+QPushButton#nPresetBtn {
+    min-width: 34px;
+    max-width: 34px;
+    min-height: 26px;
+    max-height: 26px;
+    padding: 0;
+    font-size: 13px;
+    font-weight: 600;
+    color: #b0bec5;
+    background-color: rgba(255, 255, 255, 0.04);
+    border: 1px solid rgba(255, 255, 255, 0.15);
+    border-radius: 13px;
+}
+
+QPushButton#nPresetBtn:hover {
+    background-color: rgba(0, 191, 165, 0.18);
+    border-color: rgba(0, 191, 165, 0.55);
+    color: #ffffff;
+}
+
+QPushButton#nPresetBtn:checked {
+    background-color: #00bfa5;
+    border-color: #00bfa5;
+    color: #ffffff;
+}
+
+QSpinBox#nCustomSpin {
+    min-width: 78px;
+    max-width: 84px;
+    min-height: 26px;
+    padding: 2px 6px;
+    font-size: 13px;
+    font-weight: 600;
+    color: #ffffff;
+    background-color: rgba(0, 0, 0, 0.30);
+    border: 1px solid rgba(255, 255, 255, 0.15);
+    border-radius: 13px;
+    selection-background-color: #00bfa5;
+}
+
+QSpinBox#nCustomSpin:focus {
+    border-color: #00bfa5;
+}
+
+QSpinBox#nCustomSpin::up-button,
+QSpinBox#nCustomSpin::down-button {
+    subcontrol-origin: border;
+    width: 16px;
+    border: none;
+    background: transparent;
+}
+
+QSpinBox#nCustomSpin::up-button { subcontrol-position: top right; }
+QSpinBox#nCustomSpin::down-button { subcontrol-position: bottom right; }
+
+QSpinBox#nCustomSpin::up-arrow {
+    image: none;
+    width: 0; height: 0;
+    border-left: 4px solid transparent;
+    border-right: 4px solid transparent;
+    border-bottom: 5px solid #b0bec5;
+}
+
+QSpinBox#nCustomSpin::down-arrow {
+    image: none;
+    width: 0; height: 0;
+    border-left: 4px solid transparent;
+    border-right: 4px solid transparent;
+    border-top: 5px solid #b0bec5;
+}
 """
 
 LIGHT_THEME_QSS = """
@@ -673,5 +758,91 @@ QSplitter::handle {
 
 QSplitter::handle:hover {
     background-color: #009688;
+}
+
+/* ===== 检查字数选择栏（claim 检查 Tab） ===== */
+QFrame#claimNBar {
+    background-color: #ffffff;
+    border: 1px solid rgba(0, 0, 0, 0.12);
+    border-radius: 18px;
+    padding: 4px 10px;
+}
+
+QFrame#claimNBar QLabel {
+    color: #546e7a;
+    font-size: 13px;
+    padding: 0 2px;
+}
+
+QPushButton#nPresetBtn {
+    min-width: 34px;
+    max-width: 34px;
+    min-height: 26px;
+    max-height: 26px;
+    padding: 0;
+    font-size: 13px;
+    font-weight: 600;
+    color: #455a64;
+    background-color: #f5f7fa;
+    border: 1px solid rgba(0, 0, 0, 0.12);
+    border-radius: 13px;
+}
+
+QPushButton#nPresetBtn:hover {
+    background-color: #e0f2f1;
+    border-color: #00bfa5;
+    color: #00796b;
+}
+
+QPushButton#nPresetBtn:checked {
+    background-color: #00bfa5;
+    border-color: #00bfa5;
+    color: #ffffff;
+}
+
+QSpinBox#nCustomSpin {
+    min-width: 78px;
+    max-width: 84px;
+    min-height: 26px;
+    padding: 2px 6px;
+    font-size: 13px;
+    font-weight: 600;
+    color: #263238;
+    background-color: #ffffff;
+    border: 1px solid rgba(0, 0, 0, 0.20);
+    border-radius: 13px;
+    selection-background-color: #00bfa5;
+    selection-color: #ffffff;
+}
+
+QSpinBox#nCustomSpin:focus {
+    border-color: #00bfa5;
+}
+
+QSpinBox#nCustomSpin::up-button,
+QSpinBox#nCustomSpin::down-button {
+    subcontrol-origin: border;
+    width: 16px;
+    border: none;
+    background: transparent;
+}
+
+QSpinBox#nCustomSpin::up-button { subcontrol-position: top right; }
+QSpinBox#nCustomSpin::down-button { subcontrol-position: bottom right; }
+
+QSpinBox#nCustomSpin::up-arrow {
+    image: none;
+    width: 0; height: 0;
+    border-left: 4px solid transparent;
+    border-right: 4px solid transparent;
+    border-bottom: 5px solid #546e7a;
+}
+
+QSpinBox#nCustomSpin::down-arrow {
+    image: none;
+    width: 0; height: 0;
+    border-left: 4px solid transparent;
+    border-right: 4px solid transparent;
+    border-top: 5px solid #546e7a;
 }
 """

@@ -11,11 +11,15 @@ claim_ignore_dialog.py — 不确定用语词库编辑器
 - 保存时会持久化到 `~/.config/PatentMarker/vague_wordbank.json`。
 """
 import json
+from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QPushButton, QLabel,
-    QListWidget, QListWidgetItem, QMessageBox, QFileDialog, QLineEdit,
-    QAbstractItemView,
+    QTableWidget, QTableWidgetItem, QHeaderView, QMessageBox,
+    QFileDialog, QLineEdit, QAbstractItemView,
 )
+
+# 列数：词条在对话框中以 N 列网格展示
+GRID_COLS = 4
 
 from config_manager import (
     load_vague_wordbank, save_vague_wordbank, get_builtin_vague_wordbank,
@@ -81,11 +85,20 @@ class ClaimIgnoreDialog(QDialog):
         add_row.addWidget(add_btn)
         layout.addLayout(add_row)
 
-        # 列表
-        self.list_widget = QListWidget()
-        self.list_widget.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
-        self.list_widget.setAlternatingRowColors(True)
-        layout.addWidget(self.list_widget, 1)
+        # 4 列网格
+        self.grid = QTableWidget(0, GRID_COLS)
+        self.grid.horizontalHeader().setVisible(False)
+        self.grid.verticalHeader().setVisible(False)
+        self.grid.setShowGrid(False)
+        self.grid.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
+        self.grid.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectItems)
+        self.grid.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.grid.setAlternatingRowColors(True)
+        self.grid.verticalHeader().setDefaultSectionSize(30)
+        hh = self.grid.horizontalHeader()
+        for c in range(GRID_COLS):
+            hh.setSectionResizeMode(c, QHeaderView.ResizeMode.Stretch)
+        layout.addWidget(self.grid, 1)
 
         # 底部按钮
         btn_row = QHBoxLayout()
@@ -128,16 +141,27 @@ class ClaimIgnoreDialog(QDialog):
     # ─────────────────────────────────────────
 
     def _rebuild_list(self):
-        self.list_widget.clear()
         kw = self._search_text
-        visible = 0
-        for s in self._items:
-            if kw and kw not in s.lower():
-                continue
-            item = QListWidgetItem(s)
-            self.list_widget.addItem(item)
-            visible += 1
-        self._update_count(visible)
+        filtered = [s for s in self._items if (not kw) or (kw in s.lower())]
+
+        rows = (len(filtered) + GRID_COLS - 1) // GRID_COLS
+        self.grid.clearContents()
+        self.grid.setRowCount(rows)
+        for idx, s in enumerate(filtered):
+            r, c = divmod(idx, GRID_COLS)
+            item = QTableWidgetItem(s)
+            item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            self.grid.setItem(r, c, item)
+        # 最后一行右侧补空占位（禁选），避免拖选出现假格
+        if rows:
+            last_idx = len(filtered)
+            if last_idx % GRID_COLS:
+                last_r = rows - 1
+                for c in range(last_idx % GRID_COLS, GRID_COLS):
+                    placeholder = QTableWidgetItem("")
+                    placeholder.setFlags(Qt.ItemFlag.NoItemFlags)
+                    self.grid.setItem(last_r, c, placeholder)
+        self._update_count(len(filtered))
 
     def _update_count(self, visible: int):
         if self._search_text:
@@ -165,11 +189,11 @@ class ClaimIgnoreDialog(QDialog):
             self._rebuild_list()
 
     def _on_delete_clicked(self):
-        selected = self.list_widget.selectedItems()
-        if not selected:
+        selected = self.grid.selectedItems()
+        to_remove = {it.text() for it in selected if it and it.text()}
+        if not to_remove:
             QMessageBox.information(self, "提示", "请先选中要删除的条目")
             return
-        to_remove = {item.text() for item in selected}
         self._items = [s for s in self._items if s not in to_remove]
         self._rebuild_list()
 
