@@ -1,0 +1,233 @@
+# -*- coding: utf-8 -*-
+"""
+claim_ignore_dialog.py — 权利要求书引用检查忽略词库编辑器
+- 用户添加到此列表中的字 / 词，将在「引用基础检查」「同一术语多种写法检查」中被忽略
+- 支持搜索 / 添加 / 删除 / 导入 / 导出
+"""
+import json
+from PyQt6.QtWidgets import (
+    QDialog, QVBoxLayout, QHBoxLayout, QPushButton, QLabel,
+    QListWidget, QListWidgetItem, QMessageBox, QFileDialog, QLineEdit,
+    QAbstractItemView,
+)
+
+from config_manager import load_claim_ignore_list, save_claim_ignore_list
+
+
+class ClaimIgnoreDialog(QDialog):
+    """权利要求书引用检查忽略词库编辑器"""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("权利要求书检查 — 忽略词库")
+        self.setMinimumSize(480, 560)
+        self.setModal(True)
+
+        self._items: list = list(load_claim_ignore_list())
+        self._search_text: str = ""
+
+        self._build_ui()
+        self._rebuild_list()
+
+    def _build_ui(self):
+        layout = QVBoxLayout(self)
+        layout.setSpacing(10)
+
+        hint = QLabel(
+            "添加到此处的字 / 词，在以下两项检查中将被忽略：\n"
+            "• 引用基础检查（antecedent basis）\n"
+            "• 同一术语多种写法检查\n"
+            "例如：将「技术」「所述」等常见噪声词加入忽略后，不再被误报。\n"
+            "保存后下次点「开始检查」即生效。"
+        )
+        hint.setWordWrap(True)
+        layout.addWidget(hint)
+
+        # 搜索行
+        search_row = QHBoxLayout()
+        search_row.addWidget(QLabel("🔎 搜索："))
+        self.search_edit = QLineEdit()
+        self.search_edit.setPlaceholderText("输入关键字过滤列表")
+        self.search_edit.textChanged.connect(self._on_search_changed)
+        search_row.addWidget(self.search_edit, 1)
+        clear_btn = QPushButton("清除")
+        clear_btn.clicked.connect(lambda: self.search_edit.clear())
+        search_row.addWidget(clear_btn)
+        layout.addLayout(search_row)
+
+        # 快速添加输入框
+        add_row = QHBoxLayout()
+        add_row.addWidget(QLabel("➕ 添加："))
+        self.add_edit = QLineEdit()
+        self.add_edit.setPlaceholderText("输入要忽略的字 / 词后按回车或点「添加」")
+        self.add_edit.returnPressed.connect(self._on_add_clicked)
+        add_row.addWidget(self.add_edit, 1)
+        add_btn = QPushButton("添加")
+        add_btn.setObjectName("accentBtn")
+        add_btn.clicked.connect(self._on_add_clicked)
+        add_row.addWidget(add_btn)
+        layout.addLayout(add_row)
+
+        # 列表
+        self.list_widget = QListWidget()
+        self.list_widget.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
+        self.list_widget.setAlternatingRowColors(True)
+        layout.addWidget(self.list_widget, 1)
+
+        # 底部按钮
+        btn_row = QHBoxLayout()
+
+        del_btn = QPushButton("🗑️ 删除选中")
+        del_btn.clicked.connect(self._on_delete_clicked)
+        btn_row.addWidget(del_btn)
+
+        import_btn = QPushButton("📥 导入…")
+        import_btn.setToolTip("从 JSON / TXT 文件导入（TXT 每行一个词）")
+        import_btn.clicked.connect(self._on_import)
+        btn_row.addWidget(import_btn)
+
+        export_btn = QPushButton("📤 导出…")
+        export_btn.clicked.connect(self._on_export)
+        btn_row.addWidget(export_btn)
+
+        self.count_label = QLabel("")
+        self.count_label.setObjectName("subtitleLabel")
+        btn_row.addWidget(self.count_label)
+
+        btn_row.addStretch()
+
+        save_btn = QPushButton("💾 保存并关闭")
+        save_btn.setObjectName("primaryBtn")
+        save_btn.clicked.connect(self._on_save)
+        btn_row.addWidget(save_btn)
+
+        cancel_btn = QPushButton("取消")
+        cancel_btn.clicked.connect(self.reject)
+        btn_row.addWidget(cancel_btn)
+
+        layout.addLayout(btn_row)
+
+    # ─────────────────────────────────────────
+
+    def _rebuild_list(self):
+        self.list_widget.clear()
+        kw = self._search_text
+        visible = 0
+        for s in self._items:
+            if kw and kw not in s.lower():
+                continue
+            item = QListWidgetItem(s)
+            self.list_widget.addItem(item)
+            visible += 1
+        self._update_count(visible)
+
+    def _update_count(self, visible: int):
+        if self._search_text:
+            self.count_label.setText(f"  共 {len(self._items)} 条 · 匹配 {visible} 条")
+        else:
+            self.count_label.setText(f"  共 {len(self._items)} 条")
+
+    def _on_search_changed(self, text: str):
+        self._search_text = text.strip().lower()
+        self._rebuild_list()
+
+    def _on_add_clicked(self):
+        text = self.add_edit.text().strip()
+        if not text:
+            return
+        if text in self._items:
+            QMessageBox.information(self, "已存在", f"「{text}」已在忽略列表中。")
+            self.add_edit.clear()
+            return
+        self._items.insert(0, text)
+        self.add_edit.clear()
+        if self._search_text:
+            self.search_edit.clear()
+        else:
+            self._rebuild_list()
+
+    def _on_delete_clicked(self):
+        selected = self.list_widget.selectedItems()
+        if not selected:
+            QMessageBox.information(self, "提示", "请先选中要删除的条目")
+            return
+        to_remove = {item.text() for item in selected}
+        self._items = [s for s in self._items if s not in to_remove]
+        self._rebuild_list()
+
+    def _on_save(self):
+        try:
+            save_claim_ignore_list(self._items)
+        except Exception as e:
+            QMessageBox.critical(self, "保存失败", f"无法写入文件：\n{e}")
+            return
+        QMessageBox.information(
+            self, "已保存",
+            f"忽略词库已保存，共 {len(self._items)} 条。\n下次点「开始检查」即生效。"
+        )
+        self.accept()
+
+    def _on_export(self):
+        if not self._items:
+            QMessageBox.information(self, "无内容", "当前忽略词库为空。")
+            return
+        path, selected_filter = QFileDialog.getSaveFileName(
+            self, "导出忽略词库", "claim_ignore.json",
+            "JSON 文件 (*.json);;文本文件 (*.txt);;所有文件 (*)"
+        )
+        if not path:
+            return
+        try:
+            if path.lower().endswith(".txt") or "txt" in selected_filter.lower():
+                if not path.lower().endswith(".txt"):
+                    path += ".txt"
+                with open(path, "w", encoding="utf-8") as f:
+                    for s in self._items:
+                        f.write(s + "\n")
+            else:
+                if not path.lower().endswith(".json"):
+                    path += ".json"
+                with open(path, "w", encoding="utf-8") as f:
+                    json.dump(self._items, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            QMessageBox.critical(self, "导出失败", f"无法写入文件：\n{e}")
+            return
+        QMessageBox.information(self, "已导出", f"已导出 {len(self._items)} 条至：\n{path}")
+
+    def _on_import(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self, "导入忽略词库", "",
+            "词库文件 (*.json *.txt);;JSON 文件 (*.json);;文本文件 (*.txt);;所有文件 (*)"
+        )
+        if not path:
+            return
+        try:
+            if path.lower().endswith(".json"):
+                with open(path, "r", encoding="utf-8") as f:
+                    raw = json.load(f)
+                if not isinstance(raw, list):
+                    raise ValueError("JSON 顶层必须为数组")
+                imported = [str(x).strip() for x in raw if str(x).strip()]
+            else:
+                with open(path, "r", encoding="utf-8") as f:
+                    imported = [line.strip() for line in f if line.strip()]
+        except Exception as e:
+            QMessageBox.critical(self, "导入失败", f"解析文件出错：\n{e}")
+            return
+
+        if not imported:
+            QMessageBox.warning(self, "无有效条目", "文件中未发现有效的词条。")
+            return
+
+        existing = set(self._items)
+        added = 0
+        for s in imported:
+            if s not in existing:
+                self._items.insert(0, s)
+                existing.add(s)
+                added += 1
+        self._rebuild_list()
+        QMessageBox.information(
+            self, "导入完成",
+            f"成功导入 {len(imported)} 条（新增 {added}，重复 {len(imported) - added}）。"
+        )
