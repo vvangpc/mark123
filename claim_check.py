@@ -427,10 +427,7 @@ def check_antecedent_basis(claims: dict, n: int, ignore_set: set) -> list:
                     "claim_no": no,
                     "para_idx": info.para_indices[0] if info.para_indices else -1,
                     "context": ctx,
-                    "message": (
-                        f"『所述{term}』缺少引用基础"
-                        f"（在本权项及所引用的前序权项中未找到对『{term}』的首次定义）"
-                    ),
+                    "message": f"『所述{term}』缺少引用基础",
                     "suggestion": "",
                 })
         # 写回

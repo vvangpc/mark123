@@ -1049,13 +1049,13 @@ class MainWindow(QMainWindow):
         h = self.claim_result_table.horizontalHeader()
         h.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
         h.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
-        # 上下文 / 说明 两列改为 Interactive：用户可以左右拖动分界线调节宽度
+        # 上下文：Interactive，用户可拖动它与「说明」之间的分界线
         h.setSectionResizeMode(2, QHeaderView.ResizeMode.Interactive)
-        h.setSectionResizeMode(3, QHeaderView.ResizeMode.Interactive)
+        # 说明：Stretch，自动填满剩余空间，右边界不可拖动，操作列始终可见
+        h.setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
+        # 操作：固定宽度，吸附在右侧，不会被遮挡
         h.setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)
-        # 给一个合理的初始宽度，避免 Interactive 模式下列宽为 0
-        self.claim_result_table.setColumnWidth(2, 260)
-        self.claim_result_table.setColumnWidth(3, 320)
+        self.claim_result_table.setColumnWidth(2, 240)
         h.setStretchLastSection(False)
         self.claim_result_table.setAlternatingRowColors(True)
         self.claim_result_table.verticalHeader().setVisible(False)
