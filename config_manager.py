@@ -38,6 +38,11 @@ def get_dup_ignore_path() -> str:
     return os.path.join(get_config_dir(), "dup_ignore_wordbank.json")
 
 
+def get_claim_ignore_path() -> str:
+    """权利要求书引用检查的忽略词库 JSON 路径"""
+    return os.path.join(get_config_dir(), "claim_ignore_wordbank.json")
+
+
 # ─────────────────────────────────────────
 # QSettings 封装：界面配置
 # ─────────────────────────────────────────
@@ -169,6 +174,42 @@ def load_dup_ignore_list() -> list:
 def save_dup_ignore_list(items) -> None:
     """保存重复字词忽略词库"""
     path = get_dup_ignore_path()
+    cleaned = []
+    seen = set()
+    for x in items:
+        s = str(x).strip()
+        if s and s not in seen:
+            seen.add(s)
+            cleaned.append(s)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(cleaned, f, ensure_ascii=False, indent=2)
+
+
+def load_claim_ignore_list() -> list:
+    """读取用户自定义的「权利要求书引用检查忽略词库」（去重字符串列表）"""
+    path = get_claim_ignore_path()
+    if not os.path.exists(path):
+        return []
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if isinstance(data, list):
+            seen = set()
+            result = []
+            for x in data:
+                s = str(x).strip()
+                if s and s not in seen:
+                    seen.add(s)
+                    result.append(s)
+            return result
+    except Exception:
+        return []
+    return []
+
+
+def save_claim_ignore_list(items) -> None:
+    """保存权利要求书引用检查忽略词库"""
+    path = get_claim_ignore_path()
     cleaned = []
     seen = set()
     for x in items:

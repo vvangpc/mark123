@@ -9,7 +9,7 @@ from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
     QLabel, QTextEdit, QPlainTextEdit, QFileDialog, QMessageBox,
     QStatusBar, QProgressBar, QFrame, QSplitter, QTabWidget,
-    QGroupBox, QApplication, QCheckBox, QDialog,
+    QGroupBox, QApplication, QCheckBox, QDialog, QSpinBox,
     QTableWidget, QTableWidgetItem, QHeaderView, QScrollArea
 )
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QThread
@@ -276,6 +276,13 @@ class MainWindow(QMainWindow):
         self.typo_data = []          # 当前错别字检查结果
         self.dup_data = []           # 当前重复字词检查结果
         self.history_entries = []    # 内存中累计的操作历史
+        # 权利要求书检查 Tab 的状态
+        self._claim_start_idx = None       # 权利要求书段落起始索引
+        self._claim_end_idx = None         # 权利要求书段落结束索引（不含）
+        self._claim_para_count = 0         # 权利要求书段落总数（用于确认时校验）
+        self._claim_dirty = False          # 预览框是否有未确认修改
+        self._claim_results = []           # 当前检查结果缓存
+        self._claim_loaded = False         # 当前文档是否已加载过权利要求书内容
 
         # 配置管理器
         from config_manager import AppSettings
@@ -355,6 +362,10 @@ class MainWindow(QMainWindow):
         # 标签页4: 错别字检查
         tab4 = self._create_typo_tab()
         self.tab_widget.addTab(tab4, "📝 错别字检查")
+
+        # 标签页5: 权利要求书检查（引用基础 / 引用关系 / 术语一致性）
+        tab5 = self._create_claim_check_tab()
+        self.tab_widget.addTab(tab5, "⚖️ 权利要求书检查")
 
         main_layout.addWidget(self.tab_widget, 1)
 
@@ -832,6 +843,116 @@ class MainWindow(QMainWindow):
         self._current_check_kind = None
         return widget
 
+    # ─────────────────────────────────────────
+    # 权利要求书检查 Tab
+    # ─────────────────────────────────────────
+    def _create_claim_check_tab(self) -> QWidget:
+        """创建「权利要求书检查」标签页"""
+        widget = QWidget()
+        outer = QVBoxLayout(widget)
+        outer.setContentsMargins(0, 8, 0, 0)
+        outer.setSpacing(10)
+
+        # ── 顶部工具栏 ──────────────────────────────────────
+        toolbar = QHBoxLayout()
+        toolbar.setSpacing(10)
+
+        toolbar.addWidget(QLabel("滑窗字数 N:"))
+        self.claim_n_spin = QSpinBox()
+        self.claim_n_spin.setRange(2, 6)
+        self.claim_n_spin.setValue(2)
+        self.claim_n_spin.setToolTip(
+            "用于「引用基础」「同一术语多种写法」的 N 字滑窗；\n"
+            "其它四项检查（引用关系/序号/多引/不确定用语）不受 N 影响。"
+        )
+        toolbar.addWidget(self.claim_n_spin)
+
+        self.claim_check_btn = QPushButton("▶  开始检查")
+        self.claim_check_btn.setObjectName("accentBtn")
+        self.claim_check_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.claim_check_btn.setEnabled(False)
+        self.claim_check_btn.clicked.connect(self._on_claim_check_start)
+        toolbar.addWidget(self.claim_check_btn)
+
+        self.claim_ignore_btn = QPushButton("🙈  忽略词库")
+        self.claim_ignore_btn.setObjectName("smallBtn")
+        self.claim_ignore_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.claim_ignore_btn.setToolTip("编辑权利要求书检查专用的忽略词库")
+        self.claim_ignore_btn.clicked.connect(self._on_claim_ignore_dialog)
+        toolbar.addWidget(self.claim_ignore_btn)
+
+        toolbar.addStretch()
+
+        self.claim_status_label = QLabel("请先打开 docx 文件")
+        self.claim_status_label.setObjectName("subtitleLabel")
+        toolbar.addWidget(self.claim_status_label)
+
+        outer.addLayout(toolbar)
+
+        # ── 中部：左预览（可编辑） / 右结果表（可拖动分隔）──
+        self.claim_splitter = QSplitter(Qt.Orientation.Horizontal)
+        self.claim_splitter.setChildrenCollapsible(False)
+
+        # 左侧：预览编辑 + 确认按钮
+        left_panel = QGroupBox("📄 权利要求书（可编辑）")
+        left_layout = QVBoxLayout(left_panel)
+        left_layout.setSpacing(6)
+
+        self.claim_preview_edit = QPlainTextEdit()
+        self.claim_preview_edit.setPlaceholderText(
+            "打开文档后将在这里展示权利要求书。\n"
+            "您可以直接编辑；修改后务必点下方的「✔ 确认修改」把改动写回内存，\n"
+            "最终「💾 文件生成」时才会落盘到 .docx。"
+        )
+        self.claim_preview_edit.textChanged.connect(self._on_claim_text_changed)
+        left_layout.addWidget(self.claim_preview_edit, 1)
+
+        self.claim_confirm_btn = QPushButton("✔  确认修改")
+        self.claim_confirm_btn.setObjectName("primaryBtn")
+        self.claim_confirm_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.claim_confirm_btn.setEnabled(False)
+        self.claim_confirm_btn.setToolTip(
+            "将预览框的当前内容写回内存中的权利要求书段落。\n"
+            "段落数必须保持不变（每行对应一段），最终 .docx 会反映此处的修改。"
+        )
+        self.claim_confirm_btn.clicked.connect(self._on_claim_confirm_edits)
+        left_layout.addWidget(self.claim_confirm_btn)
+
+        self.claim_splitter.addWidget(left_panel)
+
+        # 右侧：检查结果表
+        right_panel = QGroupBox("🔍 检查结果")
+        right_layout = QVBoxLayout(right_panel)
+        right_layout.setSpacing(6)
+
+        right_hint = QLabel(
+            "表中仅展示问题，不会写入最终文件；在左侧预览框里手动改掉，"
+            "再次「开始检查」重扫，直到清零。"
+        )
+        right_hint.setObjectName("subtitleLabel")
+        right_hint.setWordWrap(True)
+        right_layout.addWidget(right_hint)
+
+        self.claim_result_table = QTableWidget(0, 5)
+        self.claim_result_table.setHorizontalHeaderLabels(
+            ["类型", "权项", "上下文", "说明", "操作"]
+        )
+        h = self.claim_result_table.horizontalHeader()
+        h.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+        h.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+        h.setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
+        h.setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
+        h.setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)
+        self.claim_result_table.setAlternatingRowColors(True)
+        self.claim_result_table.verticalHeader().setVisible(False)
+        right_layout.addWidget(self.claim_result_table, 1)
+
+        self.claim_splitter.addWidget(right_panel)
+        self.claim_splitter.setSizes([560, 640])
+
+        outer.addWidget(self.claim_splitter, 1)
+        return widget
+
     def _get_wordbank_count(self) -> int:
         """读取当前生效词库条目数（合并内置 + 用户自定义）"""
         try:
@@ -1162,6 +1283,9 @@ class MainWindow(QMainWindow):
             self.typo_check_btn.setEnabled(True)
             self.dup_check_btn.setEnabled(True)
 
+            # 把权利要求书内容加载到新 Tab
+            self._claim_tab_load_from_doc()
+
             # 加载新文档时清空历史与禁用「文件生成」
             self._clear_history()
 
@@ -1304,6 +1428,26 @@ class MainWindow(QMainWindow):
         if not self.doc_data:
             self._show_toast("请先打开文档！", "error")
             return
+        # 权利要求书 Tab 若有未确认修改，提示用户先确认
+        if getattr(self, "_claim_dirty", False):
+            reply = QMessageBox.question(
+                self, "权利要求书有未确认修改",
+                "「权利要求书检查」Tab 的预览框中有未确认的编辑。\n"
+                "是否立即确认并把这些修改写入内存？\n\n"
+                "• 选「Yes」：先确认再继续生成文件；\n"
+                "• 选「No」：放弃这些未确认修改继续生成（文件不会包含它们）；\n"
+                "• 选「Cancel」：中断，回到界面手动处理。",
+                QMessageBox.StandardButton.Yes
+                | QMessageBox.StandardButton.No
+                | QMessageBox.StandardButton.Cancel,
+                QMessageBox.StandardButton.Yes,
+            )
+            if reply == QMessageBox.StandardButton.Cancel:
+                return
+            if reply == QMessageBox.StandardButton.Yes:
+                if not self._on_claim_confirm_edits():
+                    return  # 段落数不匹配等 → 中断
+            # No：放弃未确认修改，继续向下
         if not self.history_entries:
             reply = QMessageBox.question(
                 self, "未检测到修改",
@@ -1845,3 +1989,288 @@ class MainWindow(QMainWindow):
         self._log_clean(f"❌ {error_msg}")
         self.status_bar.showMessage("清洗操作失败")
         self._show_toast("操作失败！", "error")
+
+    # ═══════════════════════════════════════════════════
+    # 权利要求书检查 Tab — 槽函数
+    # ═══════════════════════════════════════════════════
+
+    def _claim_tab_load_from_doc(self):
+        """_load_document 成功后：把权利要求书章节填入预览框。"""
+        if not self.doc_data:
+            return
+        sections = self.doc_data.get('sections', {})
+        section = sections.get('权利要求书')
+        if section is None:
+            self.claim_preview_edit.blockSignals(True)
+            self.claim_preview_edit.setPlainText("")
+            self.claim_preview_edit.blockSignals(False)
+            self._claim_start_idx = None
+            self._claim_end_idx = None
+            self._claim_para_count = 0
+            self._claim_dirty = False
+            self._claim_loaded = False
+            self.claim_check_btn.setEnabled(False)
+            self.claim_confirm_btn.setEnabled(False)
+            self.claim_status_label.setText("未识别到权利要求书章节")
+            self.claim_result_table.setRowCount(0)
+            self._claim_results = []
+            return
+
+        paragraphs = self.doc_data['paragraphs']
+        self._claim_start_idx = section.start_idx
+        self._claim_end_idx = section.end_idx
+        self._claim_para_count = section.end_idx - section.start_idx
+
+        # 每段一行（含空段）→ 行数严格等于 para_count
+        lines = []
+        for i in range(section.start_idx, section.end_idx):
+            text = paragraphs[i].text if paragraphs[i].text else ""
+            lines.append(text)
+        content = "\n".join(lines)
+
+        self.claim_preview_edit.blockSignals(True)
+        self.claim_preview_edit.setPlainText(content)
+        self.claim_preview_edit.blockSignals(False)
+
+        self._claim_dirty = False
+        self._claim_loaded = True
+        self.claim_check_btn.setEnabled(True)
+        self.claim_confirm_btn.setEnabled(False)
+        self._claim_results = []
+        self.claim_result_table.setRowCount(0)
+        self.claim_status_label.setText(
+            f"已加载权利要求书：共 {self._claim_para_count} 段  ·  点「开始检查」开始"
+        )
+
+    def _on_claim_text_changed(self):
+        """预览框内容变化 → 标记 dirty，高亮确认按钮"""
+        if not self._claim_loaded:
+            return
+        self._claim_dirty = True
+        self.claim_confirm_btn.setEnabled(True)
+        self._update_claim_status_bar()
+
+    def _update_claim_status_bar(self):
+        """刷新权利要求书 Tab 的状态栏文字"""
+        if not self._claim_loaded:
+            return
+        n_results = len(self._claim_results)
+        parts = [f"共 {self._claim_para_count} 段"]
+        if n_results:
+            parts.append(f"问题 {n_results} 条")
+        if self._claim_dirty:
+            parts.append("⚠ 未确认修改")
+        self.claim_status_label.setText("  ·  ".join(parts))
+
+    def _on_claim_check_start(self):
+        """点「开始检查」：先从预览框收集文本并做检查（不会自动写回内存）"""
+        if not self._claim_loaded or self._claim_start_idx is None:
+            self._show_toast("请先加载包含权利要求书的文档", "warning")
+            return
+
+        # 从预览框拿当前内容（可能是用户修改过但未确认的）
+        text = self.claim_preview_edit.toPlainText()
+        lines = text.split("\n")
+        if len(lines) != self._claim_para_count:
+            QMessageBox.warning(
+                self, "段落数变化",
+                f"预览框现有 {len(lines)} 行，而加载时为 {self._claim_para_count} 段。\n\n"
+                "本功能要求每行对应一个段落（v1 限制）。请：\n"
+                "• 不要增减整行（不要按回车新增空行，也不要删除整行）；\n"
+                "• 仅在行内修改文字；\n"
+                "• 如需大幅调整结构，请使用其它功能完成后再回来。"
+            )
+            return
+
+        # 临时构造 dummy paragraphs：用简单壳类，只提供 .text 属性给 parse_claims 用
+        class _Shell:
+            __slots__ = ("text",)
+
+            def __init__(self, t):
+                self.text = t
+
+        # 为了让 para_idx 的偏移与全文一致，我们只把权利要求书区间替换成 shell
+        doc_paragraphs = self.doc_data['paragraphs']
+        shell_paragraphs = list(doc_paragraphs)
+        for i, line in enumerate(lines):
+            shell_paragraphs[self._claim_start_idx + i] = _Shell(line)
+
+        try:
+            from claim_check import run_all_checks
+            from config_manager import load_claim_ignore_list
+            ignore_set = set(load_claim_ignore_list())
+            n = int(self.claim_n_spin.value())
+            results = run_all_checks(
+                shell_paragraphs,
+                self._claim_start_idx,
+                self._claim_end_idx,
+                n=n,
+                ignore_set=ignore_set,
+            )
+        except Exception as e:
+            import traceback as tb
+            QMessageBox.critical(
+                self, "检查失败",
+                f"权利要求书检查出现异常：\n{e}\n\n{tb.format_exc()}"
+            )
+            return
+
+        self._claim_results = results
+        self._render_claim_results(results)
+        self._update_claim_status_bar()
+        if results:
+            self._show_toast(f"发现 {len(results)} 条问题", "warning")
+        else:
+            self._show_toast("未发现问题", "success")
+
+    def _render_claim_results(self, results: list):
+        """渲染检查结果到右侧表格"""
+        KIND_LABELS = {
+            "antecedent": "引用基础",
+            "dependency": "引用关系",
+            "term":       "术语不一致",
+            "vague":      "不确定用语",
+            "numbering":  "序号",
+            "multi_dep":  "多引合法性",
+        }
+        self.claim_result_table.setRowCount(0)
+        for row_idx, item in enumerate(results):
+            self.claim_result_table.insertRow(row_idx)
+
+            kind_item = QTableWidgetItem(KIND_LABELS.get(item.get("kind"), item.get("kind", "")))
+            kind_item.setFlags(kind_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+            self.claim_result_table.setItem(row_idx, 0, kind_item)
+
+            claim_no = item.get("claim_no")
+            claim_str = f"权{claim_no}" if claim_no else "-"
+            no_item = QTableWidgetItem(claim_str)
+            no_item.setFlags(no_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+            self.claim_result_table.setItem(row_idx, 1, no_item)
+
+            ctx_item = QTableWidgetItem(item.get("context", ""))
+            ctx_item.setFlags(ctx_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+            self.claim_result_table.setItem(row_idx, 2, ctx_item)
+
+            msg_item = QTableWidgetItem(item.get("message", ""))
+            msg_item.setFlags(msg_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+            self.claim_result_table.setItem(row_idx, 3, msg_item)
+
+            # 操作列：忽略（按本条 context 里的关键词）
+            btn = QPushButton("忽略")
+            btn.setObjectName("smallBtn")
+            btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            btn.clicked.connect(lambda _=False, r=row_idx: self._on_claim_ignore_row(r))
+            self.claim_result_table.setCellWidget(row_idx, 4, btn)
+
+    def _on_claim_ignore_row(self, row: int):
+        """点击行内「忽略」：把该行相关的 ngram 加入忽略词库并从表格移除"""
+        if row < 0 or row >= len(self._claim_results):
+            return
+        item = self._claim_results[row]
+        kind = item.get("kind")
+        # 仅术语类（antecedent / term）需要加词；其它直接从表中移除
+        to_add = None
+        if kind == "antecedent":
+            msg = item.get("message", "")
+            # 从 message 抓『所述X』里的 X
+            import re as _re
+            m = _re.search(r'『所述(.+?)』', msg)
+            if m:
+                to_add = m.group(1)
+        elif kind == "term":
+            msg = item.get("message", "")
+            import re as _re
+            m = _re.search(r'『(.+?)』与『(.+?)』', msg)
+            if m:
+                to_add = [m.group(1), m.group(2)]
+
+        if to_add:
+            try:
+                from config_manager import load_claim_ignore_list, save_claim_ignore_list
+                current = load_claim_ignore_list()
+                cur_set = set(current)
+                adds = [to_add] if isinstance(to_add, str) else to_add
+                for w in adds:
+                    if w and w not in cur_set:
+                        current.append(w)
+                        cur_set.add(w)
+                save_claim_ignore_list(current)
+                self._show_toast(f"已加入忽略词库：{'、'.join(adds) if isinstance(to_add, list) else to_add}", "info")
+            except Exception as e:
+                self._show_toast(f"写入忽略词库失败：{e}", "error")
+
+        # 从本地结果中移除并重渲染
+        self._claim_results.pop(row)
+        self._render_claim_results(self._claim_results)
+        self._update_claim_status_bar()
+
+    def _on_claim_ignore_dialog(self):
+        """打开忽略词库编辑对话框"""
+        try:
+            from claim_ignore_dialog import ClaimIgnoreDialog
+        except Exception as e:
+            QMessageBox.critical(self, "无法打开", f"加载忽略词库编辑器失败：\n{e}")
+            return
+        dlg = ClaimIgnoreDialog(self)
+        dlg.exec()
+
+    def _on_claim_confirm_edits(self) -> bool:
+        """
+        确认修改：把预览框中的内容写回内存 paragraphs[start:end]。
+        返回 True 表示成功或无需写回；False 表示失败（段落数变化等）。
+        """
+        if not self._claim_loaded or self._claim_start_idx is None:
+            return True
+        if not self._claim_dirty:
+            return True
+
+        text = self.claim_preview_edit.toPlainText()
+        lines = text.split("\n")
+        if len(lines) != self._claim_para_count:
+            QMessageBox.warning(
+                self, "段落数变化",
+                f"预览框现有 {len(lines)} 行，而原文档为 {self._claim_para_count} 段。\n\n"
+                "本功能要求每行对应一个段落（v1 限制）。请恢复为原段数后再确认，"
+                "或使用撤销 (Ctrl+Z) 回到上一状态。"
+            )
+            return False
+
+        paragraphs = self.doc_data['paragraphs']
+        from claim_check import set_paragraph_text
+        changed_count = 0
+        changed_lines = []
+        for i, new_line in enumerate(lines):
+            para = paragraphs[self._claim_start_idx + i]
+            old_line = para.text if para.text else ""
+            if old_line != new_line:
+                try:
+                    if set_paragraph_text(para, new_line):
+                        changed_count += 1
+                        preview_old = old_line.strip()[:40]
+                        preview_new = new_line.strip()[:40]
+                        changed_lines.append(
+                            f"第{i+1}段：{preview_old} → {preview_new}"
+                        )
+                except Exception as e:
+                    QMessageBox.critical(
+                        self, "写回失败",
+                        f"第 {i+1} 段写回时出错：\n{e}"
+                    )
+                    return False
+
+        self._claim_dirty = False
+        self.claim_confirm_btn.setEnabled(False)
+        self._update_claim_status_bar()
+
+        if changed_count:
+            detail = "\n".join(changed_lines[:20])
+            if len(changed_lines) > 20:
+                detail += f"\n…（共 {len(changed_lines)} 处改动）"
+            self._add_history(
+                f"编辑权利要求书（{changed_count} 段）",
+                detail,
+            )
+            self._show_toast(f"已确认 {changed_count} 段修改", "success")
+        else:
+            self._show_toast("无实际改动", "info")
+        return True
