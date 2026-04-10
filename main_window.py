@@ -11,7 +11,7 @@ from PyQt6.QtWidgets import (
     QStatusBar, QProgressBar, QFrame, QSplitter, QTabWidget,
     QGroupBox, QApplication, QCheckBox, QDialog, QSpinBox,
     QButtonGroup, QTableWidget, QTableWidgetItem, QHeaderView,
-    QScrollArea, QAbstractItemView,
+    QScrollArea, QAbstractItemView, QLineEdit,
 )
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QThread
 from PyQt6.QtGui import (
