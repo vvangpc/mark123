@@ -739,6 +739,7 @@ def check_term_consistency(claims: dict, n: int, ignore_set: set) -> list:
 def run_all_checks(paragraphs, start_idx: int, end_idx: int,
                    n: int, ignore_set=None, vague_words=None,
                    check_term: bool = False,
+                   check_vague: bool = True,
                    use_dynamic_truncate: bool = False,
                    use_dynamic_fallback: bool = False,
                    boundary_blacklist=None) -> list:
@@ -764,7 +765,8 @@ def run_all_checks(paragraphs, start_idx: int, end_idx: int,
     results.extend(check_claim_dependency(claims))
     results.extend(check_multi_dependency(claims))
     results.extend(check_claim_numbering(claims))
-    results.extend(check_vague_terms(claims, vague_words))
+    if check_vague:
+        results.extend(check_vague_terms(claims, vague_words))
     results.extend(check_antecedent_basis(
         claims, n, ignore_set or set(),
         use_dynamic_truncate=use_dynamic_truncate,

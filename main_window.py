@@ -983,7 +983,7 @@ class MainWindow(QMainWindow):
         self.claim_dyn_trunc_cb.setChecked(False)
         self.claim_dyn_trunc_cb.setCursor(Qt.CursorShape.PointingHandCursor)
         trunc_row.addWidget(self.claim_dyn_trunc_cb)
-        # 可点击的标签：左键点击 → 弹介绍；右键 → 打开黑名单词库
+        # 可点击的标签：左键点击 → 弹介绍；[黑名单] → 打开黑名单词库
         self.claim_dyn_trunc_label = QLabel(
             '<a href="info" style="text-decoration:none;color:inherit;">动态截断</a>'
             '&nbsp;<a href="bl" style="text-decoration:none;color:#3a8ee6;">[黑名单]</a>'
@@ -994,6 +994,7 @@ class MainWindow(QMainWindow):
         )
         self.claim_dyn_trunc_label.linkActivated.connect(self._on_dyn_trunc_link)
         trunc_row.addWidget(self.claim_dyn_trunc_label)
+        trunc_row.addStretch()
         dyn_layout.addLayout(trunc_row)
 
         # 第二行：动态回退
@@ -1011,30 +1012,58 @@ class MainWindow(QMainWindow):
         self.claim_dyn_fb_label.setToolTip("点击查看功能说明")
         self.claim_dyn_fb_label.linkActivated.connect(self._on_dyn_fb_link)
         fb_row.addWidget(self.claim_dyn_fb_label)
+        fb_row.addStretch()
         dyn_layout.addLayout(fb_row)
 
         toolbar.addWidget(dyn_box)
 
-        self.claim_ignore_btn = QPushButton("📕  不确定用语词库")
-        self.claim_ignore_btn.setObjectName("smallBtn")
-        self.claim_ignore_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.claim_ignore_btn.setToolTip(
-            "编辑权利要求书中「不应出现」的不确定 / 含糊用语词库\n"
-            "（约、大概、可能、优选…），可增删、导入导出、恢复内置。"
-        )
-        self.claim_ignore_btn.clicked.connect(self._on_claim_ignore_dialog)
-        toolbar.addWidget(self.claim_ignore_btn)
+        # ── 不确定用语检查 / 术语不一致检查 上下分布的勾选框 ──
+        check_box = QFrame()
+        check_box.setObjectName("checkBox")
+        check_layout = QVBoxLayout(check_box)
+        check_layout.setContentsMargins(6, 0, 6, 0)
+        check_layout.setSpacing(2)
 
-        # 「术语不一致」检查的开关：该检查噪音较大，默认关闭
-        self.claim_term_cb = QCheckBox("检查术语不一致")
+        # 第一行：不确定用语检查（默认勾选，保持原有行为）
+        vague_row = QHBoxLayout()
+        vague_row.setContentsMargins(0, 0, 0, 0)
+        vague_row.setSpacing(4)
+        self.claim_vague_cb = QCheckBox()
+        self.claim_vague_cb.setChecked(True)
+        self.claim_vague_cb.setCursor(Qt.CursorShape.PointingHandCursor)
+        vague_row.addWidget(self.claim_vague_cb)
+        self.claim_vague_label = QLabel(
+            '<a href="info" style="text-decoration:none;color:inherit;">不确定用语检查</a>'
+            '&nbsp;<a href="wb" style="text-decoration:none;color:#3a8ee6;">[词库]</a>'
+        )
+        self.claim_vague_label.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.claim_vague_label.setToolTip(
+            "点「不确定用语检查」查看功能说明；点「[词库]」编辑不确定用语词库"
+        )
+        self.claim_vague_label.linkActivated.connect(self._on_vague_link)
+        vague_row.addWidget(self.claim_vague_label)
+        vague_row.addStretch()
+        check_layout.addLayout(vague_row)
+
+        # 第二行：术语不一致检查（噪音较大，默认关闭）
+        term_row = QHBoxLayout()
+        term_row.setContentsMargins(0, 0, 0, 0)
+        term_row.setSpacing(4)
+        self.claim_term_cb = QCheckBox()
         self.claim_term_cb.setChecked(False)
         self.claim_term_cb.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.claim_term_cb.setToolTip(
-            "启用「同一术语多种写法」检查。\n"
-            "该检查以『所述』后面的 N 字术语作为锚点，可能产生一定噪音，\n"
-            "默认不启用；需要做权利要求书术语一致性复盘时再勾选。"
+        term_row.addWidget(self.claim_term_cb)
+        self.claim_term_label = QLabel(
+            '<a href="info" style="text-decoration:none;color:inherit;">术语不一致检查</a>'
         )
-        toolbar.addWidget(self.claim_term_cb)
+        self.claim_term_label.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.claim_term_label.setToolTip("点击查看功能说明")
+        self.claim_term_label.linkActivated.connect(self._on_term_link)
+        term_row.addWidget(self.claim_term_label)
+        term_row.addStretch()
+        check_layout.addLayout(term_row)
+
+        toolbar.addWidget(check_box)
 
         toolbar.addStretch()
 
@@ -2317,6 +2346,7 @@ class MainWindow(QMainWindow):
                 n=n,
                 ignore_set=set(self._claim_session_ignore),
                 vague_words=vague_words,
+                check_vague=self.claim_vague_cb.isChecked(),
                 check_term=self.claim_term_cb.isChecked(),
                 use_dynamic_truncate=use_trunc,
                 use_dynamic_fallback=use_fb,
@@ -2629,6 +2659,35 @@ class MainWindow(QMainWindow):
             return
         dlg = BoundaryBlacklistDialog(self)
         dlg.exec()
+
+    # ── 不确定用语检查 / 术语不一致检查 的信息弹窗 + 词库入口 ──
+    def _on_vague_link(self, href: str):
+        if href == "wb":
+            self._on_claim_ignore_dialog()
+            return
+        QMessageBox.information(
+            self, "不确定用语检查 — 功能说明",
+            "【不确定用语检查】\n\n"
+            "扫描权利要求书全文，查找属于「不确定 / 含糊」用语词库的词汇，\n"
+            "例如：约、大概、可能、优选、左右、基本、通常 …\n\n"
+            "权利要求书中应避免不确定用语，否则常被审查员以「保护范围不清楚」\n"
+            "为由发出审查意见 (OA)。\n\n"
+            "• 词库可点本行右侧的「[词库]」按钮编辑，支持增删 / 导入 / 导出\n"
+            "• 默认勾选；如需关闭检查可取消勾选\n"
+            "• 内置 30+ 条常见词，可恢复默认"
+        )
+
+    def _on_term_link(self, href: str):
+        QMessageBox.information(
+            self, "术语不一致检查 — 功能说明",
+            "【术语不一致检查（同一术语多种写法）】\n\n"
+            "以『所述』后面的 N 字术语作为锚点，在权利要求书范围内查找\n"
+            "「长度相同但仅一字之差」的相似术语对，作为可能的术语漂移上报。\n\n"
+            "例：权 1 写「齿圈」、权 2 写「齿环」→ 报『齿圈』vs『齿环』疑似同义\n\n"
+            "• 该检查噪音相对较大，默认不勾选\n"
+            "• 仅在做权利要求书术语一致性复盘时建议启用\n"
+            "• 受工具栏「检查字数 N」与「忽略词库」共同影响"
+        )
 
     def _on_claim_confirm_edits(self) -> bool:
         """
