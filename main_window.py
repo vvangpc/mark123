@@ -968,6 +968,53 @@ class MainWindow(QMainWindow):
         self.claim_check_btn.clicked.connect(self._on_claim_check_start)
         toolbar.addWidget(self.claim_check_btn)
 
+        # ── 引用基础降噪：动态截断 / 动态回退 两个上下分布的勾选框 ──
+        dyn_box = QFrame()
+        dyn_box.setObjectName("dynBox")
+        dyn_layout = QVBoxLayout(dyn_box)
+        dyn_layout.setContentsMargins(6, 0, 6, 0)
+        dyn_layout.setSpacing(2)
+
+        # 第一行：动态截断
+        trunc_row = QHBoxLayout()
+        trunc_row.setContentsMargins(0, 0, 0, 0)
+        trunc_row.setSpacing(4)
+        self.claim_dyn_trunc_cb = QCheckBox()
+        self.claim_dyn_trunc_cb.setChecked(False)
+        self.claim_dyn_trunc_cb.setCursor(Qt.CursorShape.PointingHandCursor)
+        trunc_row.addWidget(self.claim_dyn_trunc_cb)
+        # 可点击的标签：左键点击 → 弹介绍；右键 → 打开黑名单词库
+        self.claim_dyn_trunc_label = QLabel(
+            '<a href="info" style="text-decoration:none;color:inherit;">动态截断</a>'
+            '&nbsp;<a href="bl" style="text-decoration:none;color:#3a8ee6;">[黑名单]</a>'
+        )
+        self.claim_dyn_trunc_label.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.claim_dyn_trunc_label.setToolTip(
+            "点「动态截断」查看功能说明；点「[黑名单]」编辑边界词库"
+        )
+        self.claim_dyn_trunc_label.linkActivated.connect(self._on_dyn_trunc_link)
+        trunc_row.addWidget(self.claim_dyn_trunc_label)
+        dyn_layout.addLayout(trunc_row)
+
+        # 第二行：动态回退
+        fb_row = QHBoxLayout()
+        fb_row.setContentsMargins(0, 0, 0, 0)
+        fb_row.setSpacing(4)
+        self.claim_dyn_fb_cb = QCheckBox()
+        self.claim_dyn_fb_cb.setChecked(False)
+        self.claim_dyn_fb_cb.setCursor(Qt.CursorShape.PointingHandCursor)
+        fb_row.addWidget(self.claim_dyn_fb_cb)
+        self.claim_dyn_fb_label = QLabel(
+            '<a href="info" style="text-decoration:none;color:inherit;">动态回退</a>'
+        )
+        self.claim_dyn_fb_label.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.claim_dyn_fb_label.setToolTip("点击查看功能说明")
+        self.claim_dyn_fb_label.linkActivated.connect(self._on_dyn_fb_link)
+        fb_row.addWidget(self.claim_dyn_fb_label)
+        dyn_layout.addLayout(fb_row)
+
+        toolbar.addWidget(dyn_box)
+
         self.claim_ignore_btn = QPushButton("📕  不确定用语词库")
         self.claim_ignore_btn.setObjectName("smallBtn")
         self.claim_ignore_btn.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -2257,8 +2304,11 @@ class MainWindow(QMainWindow):
 
         try:
             from claim_check import run_all_checks
-            from config_manager import load_vague_wordbank
+            from config_manager import load_vague_wordbank, load_boundary_blacklist
             vague_words = load_vague_wordbank()
+            use_trunc = self.claim_dyn_trunc_cb.isChecked()
+            use_fb = self.claim_dyn_fb_cb.isChecked()
+            boundary_bl = load_boundary_blacklist() if use_trunc else None
             n = int(self._claim_n)
             results = run_all_checks(
                 shell_paragraphs,
@@ -2268,6 +2318,9 @@ class MainWindow(QMainWindow):
                 ignore_set=set(self._claim_session_ignore),
                 vague_words=vague_words,
                 check_term=self.claim_term_cb.isChecked(),
+                use_dynamic_truncate=use_trunc,
+                use_dynamic_fallback=use_fb,
+                boundary_blacklist=boundary_bl,
             )
         except Exception as e:
             import traceback as tb
@@ -2527,6 +2580,54 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "无法打开", f"加载忽略词库编辑器失败：\n{e}")
             return
         dlg = ClaimIgnoreDialog(self)
+        dlg.exec()
+
+    # ── 引用基础降噪：动态截断 / 动态回退 信息弹窗与黑名单入口 ──
+    def _on_dyn_trunc_link(self, href: str):
+        if href == "bl":
+            self._on_open_boundary_blacklist()
+            return
+        QMessageBox.information(
+            self, "动态截断 — 功能说明",
+            "【动态截断】黑名单边界识别法\n\n"
+            "默认的引用基础检查会取『所述』后面的固定 N 个字作为术语，\n"
+            "但 N 偏大时常把后续动词/方位词一起吞进来，造成误判。\n\n"
+            "动态截断的做法：\n"
+            "  • 从『所述』往后扫 CJK 字符\n"
+            "  • 一旦命中黑名单词的首字（如『安装』『上方』『与』），\n"
+            "    立即停止，把之前累积的字串作为术语\n"
+            "  • 例：「所述齿轮安装在主轴上」→ 命中『安装』→ 术语 = 齿轮\n\n"
+            "黑名单可点本行右侧的「[黑名单]」按钮编辑。\n\n"
+            "适用场景：词库越完善，识别越精准，是降噪首选方案。"
+        )
+
+    def _on_dyn_fb_link(self, href: str):
+        QMessageBox.information(
+            self, "动态回退 — 功能说明",
+            "【动态回退】渐进式前缀匹配法\n\n"
+            "默认检查只比对固定 N 字术语，若 N 字串没在前文出现就报错；\n"
+            "但实际上前文可能用更短的形式定义过这个部件。\n\n"
+            "动态回退的做法：\n"
+            "  • 取『所述』后的 N 字术语\n"
+            "  • 如果找不到对应定义，就把末尾字砍掉，换成 N-1 字再试\n"
+            "  • 继续缩短到 N-2、N-3 …，任一前缀匹配上就放过\n"
+            "  • 全部缩到 2 字仍不匹配才报错\n\n"
+            "例：N=6 时『所述齿轮安装在主』→ 砍 → 齿轮安装在 → 齿轮安装\n"
+            "    → 齿轮（在前文出现过！）→ 放过\n\n"
+            "适用场景：作为容错机制，能极大降低代理人改字数后产生的噪音。\n\n"
+            "── 与「动态截断」同时勾选时 ──\n"
+            "先用截断得到一个干净的最长术语，再对该术语应用回退\n"
+            "（从右向左缩短前缀），仅当所有前缀都没匹配上时才报错。\n"
+            "这是误判最低的组合策略。"
+        )
+
+    def _on_open_boundary_blacklist(self):
+        try:
+            from boundary_blacklist_dialog import BoundaryBlacklistDialog
+        except Exception as e:
+            QMessageBox.critical(self, "无法打开", f"加载黑名单词库编辑器失败：\n{e}")
+            return
+        dlg = BoundaryBlacklistDialog(self)
         dlg.exec()
 
     def _on_claim_confirm_edits(self) -> bool:

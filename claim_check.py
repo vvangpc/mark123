@@ -43,6 +43,38 @@ VAGUE_WORDBANK = [
 
 
 # ─────────────────────────────────────────
+# 内置"动态截断黑名单"词库
+# ─────────────────────────────────────────
+# 在"所述 X"中，X 的真实边界通常是这些"词性词"（动词/方位词/虚词）。
+# 动态截断时，从"所述"往后扫，遇到标点或任一黑名单词的首字时立刻停下，
+# 把之前累积的 CJK 字当作术语返回。
+DEFAULT_BOUNDARY_BLACKLIST = [
+    # ── 动词类（结构性动词，常出现在"所述X + 动词"里）──
+    "安装", "连接", "设置", "设于", "设在", "位于", "固定", "固连",
+    "套设", "套装", "套接", "套在", "插入", "插设", "嵌入", "嵌设",
+    "抵接", "抵靠", "贴合", "贴附", "贴设", "焊接", "铰接", "铰连",
+    "粘接", "粘贴", "粘连", "卡接", "卡设", "卡在", "卡合", "啮合",
+    "紧固", "紧贴", "挤压", "按压", "压接", "压紧", "压合", "螺接",
+    "螺纹", "铆接", "铆合", "钩接", "钩挂", "悬挂", "吊装",
+    "包括", "包含", "包围", "围绕", "环绕", "环设", "环抱",
+    "用于", "以便", "以使", "使得", "能够", "可以",
+    "穿过", "穿设", "穿出", "贯穿", "贯通", "通过",
+    "朝向", "面向", "背向", "指向", "延伸", "伸出", "伸入",
+    "形成", "构成", "组成", "具有", "带有", "设有",
+    # ── 方位词类（"所述X + 的上/下/内/外"）──
+    "上方", "下方", "上部", "下部", "上端", "下端", "上侧", "下侧",
+    "上表", "下表", "顶部", "底部", "顶端", "底端", "顶面", "底面",
+    "内部", "外部", "内侧", "外侧", "内端", "外端", "内壁", "外壁",
+    "前方", "后方", "前部", "后部", "前端", "后端", "前侧", "后侧",
+    "左方", "右方", "左部", "右部", "左端", "右端", "左侧", "右侧",
+    "中部", "中间", "中央", "中心", "周侧", "周缘", "周向", "径向",
+    "轴向", "端部", "端面", "一端", "另一", "两端", "两侧", "两者",
+    # ── 连词/助词/介词类 ──
+    "与其", "和其", "及其", "或者",
+]
+
+
+# ─────────────────────────────────────────
 # 数据结构
 # ─────────────────────────────────────────
 @dataclass
@@ -351,39 +383,140 @@ def _is_in_citation_formula(text: str, suoshu_pos: int) -> bool:
 
 
 # ─────────────────────────────────────────
+# 动态截断 / 动态回退 辅助
+# ─────────────────────────────────────────
+def _extract_term_dynamic_truncate(text: str, start: int,
+                                    blacklist_first_chars: set,
+                                    max_len: int = 12) -> str:
+    """
+    从 text[start:] 起向后扫描 CJK 字符，直到遇到下列任一情况就停下：
+      • 非 CJK 字符（标点、空格、英文、数字…）
+      • 黑名单词的首字（即位置 k 起 text[k:k+L] 在黑名单里）
+      • 累计达到 max_len（保护用，防止整段被吞）
+    返回累积到的术语字符串（可能为空）。
+    """
+    out = []
+    k = start
+    L = len(text)
+    while k < L and len(out) < max_len:
+        ch = text[k]
+        if not _CJK_RE.match(ch):
+            break
+        # 检查从位置 k 起是否命中黑名单的某个词
+        # 黑名单首字命中是必要条件，再做一次完整匹配以避免误伤
+        if ch in blacklist_first_chars:
+            hit = False
+            # 尝试匹配 2~4 字的黑名单词（黑名单词长度大多是 2，少数 3~4）
+            for L_word in (2, 3, 4):
+                if k + L_word <= L and text[k:k + L_word] in _BLACKLIST_WORDS_CACHE:
+                    hit = True
+                    break
+            if hit:
+                break
+        out.append(ch)
+        k += 1
+    return "".join(out)
+
+
+# 全局缓存：把当前调用使用的黑名单词集合放进去，加速 _extract_term_dynamic_truncate
+_BLACKLIST_WORDS_CACHE: set = set()
+
+
+def _build_blacklist_lookup(blacklist) -> tuple:
+    """从词列表构造 (首字 set, 完整词 set)"""
+    words = {w for w in (blacklist or ()) if w}
+    first_chars = {w[0] for w in words if w}
+    return first_chars, words
+
+
+# ─────────────────────────────────────────
 # 检查 5: 引用基础（antecedent basis）
 # ─────────────────────────────────────────
-def check_antecedent_basis(claims: dict, n: int, ignore_set: set) -> list:
+def check_antecedent_basis(claims: dict, n: int, ignore_set: set,
+                            use_dynamic_truncate: bool = False,
+                            use_dynamic_fallback: bool = False,
+                            boundary_blacklist=None) -> list:
     """
-    原则：以"所述X"形式出现的 n 字子串 X，必须在之前（同权项内或该权项所引用
-    的更早权项中）以"非所述"方式出现过一次（视为首次定义）。
+    原则：以"所述X"形式出现的术语 X，必须在之前（同权项内或该权项所引用的
+    更早权项中）以"非所述"方式出现过一次（视为首次定义）。
 
-    注：n 字滑窗自然会产生噪声，配合 ignore_set 过滤。
+    术语 X 的提取策略：
+      • 默认（两个开关都关）：紧跟"所述"后取 n 个 CJK 字
+      • 仅 use_dynamic_truncate=True：从"所述"往后扫，遇到标点 / 黑名单词
+        立刻停下，把累积的 CJK 字串作为术语（自适应长度）
+      • 仅 use_dynamic_fallback=True：取 n 字后，若不在已定义集中，则不断
+        把末尾砍掉一个字，重试，直到匹配到或缩到 1 字仍不匹配才报错
+      • 两个都开：先用截断得到一个"干净"的最长术语，再对该术语应用回退
+        （从右向左缩短）。仅当所有前缀都没匹配时才报错——这是误判最低的组合
+
+    注：滑窗式定义集仍然按 n 字累积；回退/截断只影响"所述"侧的术语形态。
     """
     results = []
     ignore_set = set(ignore_set or ())
+    # 准备黑名单查找表（即便没启用截断也无副作用）
+    bl_first_chars, bl_words = _build_blacklist_lookup(boundary_blacklist or [])
+    global _BLACKLIST_WORDS_CACHE
+    _BLACKLIST_WORDS_CACHE = bl_words
+    dyn_mode = use_dynamic_truncate or use_dynamic_fallback
+    # 动态模式下，术语长度可变；用更宽松的最大长度做候选
+    DYN_MAX_LEN = 12
+
+    def _collect_freeform_terms(text: str, suoshu_span: set) -> set:
+        """
+        把文本拆成"连续 CJK 段"，对每段产生所有长度 2..DYN_MAX_LEN 的子串
+        作为"已定义术语候选"。位于 suoshu_span 内的位置视为引用，不参与定义。
+        """
+        out: set = set()
+        L = len(text)
+        i = 0
+        while i < L:
+            if not _CJK_RE.match(text[i]):
+                i += 1
+                continue
+            # 找到一段连续 CJK
+            j = i
+            while j < L and _CJK_RE.match(text[j]):
+                j += 1
+            # 对这段 [i, j) 抽所有长度 2..DYN_MAX_LEN 的子串，
+            # 但需要剔除与 suoshu_span 完全重叠的子串
+            seg_len = j - i
+            for L_sub in range(2, min(DYN_MAX_LEN, seg_len) + 1):
+                for k in range(i, j - L_sub + 1):
+                    if any((pos in suoshu_span) for pos in range(k, k + L_sub)):
+                        continue
+                    sub = text[k:k + L_sub]
+                    out.add(sub)
+            i = j
+        return out
+
     # 先给每个权项建立"已定义的 n 字术语集合"（不包含所述前缀）
     # 遍历时，按权项从小到大，继承该权项所依赖的权项的定义集
     defined_by_claim: dict = {}
+    defined_free_by_claim: dict = {}  # 动态模式下使用
     for no in sorted(claims.keys()):
         info = claims[no]
         # 起始集合 = 所有被其引用的前序权项的 defined 集合的并集
         base: set = set()
+        base_free: set = set()
         for cited in info.cites:
             if cited in defined_by_claim:
                 base |= defined_by_claim[cited]
+            if cited in defined_free_by_claim:
+                base_free |= defined_free_by_claim[cited]
         # 遍历文本，识别"非所述的 n 字 CJK 子串"作为首次定义
         text = info.text
         cur_defined = set(base)
+        cur_defined_free = set(base_free)
         # 过滤掉"权利要求N所述"中的"所述"（属于引用语公式，不是反向引用）
         suoshu_positions = [
             m.start() for m in re.finditer(r'所述', text)
             if not _is_in_citation_formula(text, m.start())
         ]
+        # 引用区窗口：默认 n 字；动态模式下放宽到 DYN_MAX_LEN
+        span_len = DYN_MAX_LEN if dyn_mode else n
         suoshu_span = set()
         for p in suoshu_positions:
-            # 认为"所述"后紧跟的 n 个 CJK 字作为被引用的术语
-            for k in range(p + 2, min(p + 2 + n, len(text))):
+            for k in range(p + 2, min(p + 2 + span_len, len(text))):
                 suoshu_span.add(k)
         # 先扫一遍"非所述"上下文中的 n 字 CJK 子串 → 记入定义集
         # 此处用 skip_noise=True 过滤掉含"的/在/是"等停用字的子串
@@ -395,11 +528,13 @@ def check_antecedent_basis(claims: dict, n: int, ignore_set: set) -> list:
             if range_positions & suoshu_span:
                 continue
             cur_defined.add(seg)
-        # 再扫一遍"所述 + n 字子串"，检查是否在 cur_defined 里
-        # 注：此检查使用已经包含本段首次定义的集合 —— 合理：在同一权项中
-        # 先定义后"所述"是合规的。
+        # 动态模式：额外收集变长子串作为"自由形式"定义集
+        if dyn_mode:
+            cur_defined_free |= _collect_freeform_terms(text, suoshu_span)
+
+        # ── 提取每个 "所述" 后的术语并校验 ──
         for p in suoshu_positions:
-            # 抓取紧跟"所述"的 n 个 CJK 字
+            # 1) 默认 n 字术语（用于既不开截断也不开回退、或回退单独使用时）
             term_chars = []
             for k in range(p + 2, len(text)):
                 ch = text[k]
@@ -409,29 +544,100 @@ def check_antecedent_basis(claims: dict, n: int, ignore_set: set) -> list:
                         break
                 else:
                     break
-            if len(term_chars) < n:
-                continue
-            term = "".join(term_chars)
-            if term in ignore_set:
-                continue
-            # 若"所述"后紧跟的 n 字本身含停用字（如"第一/两侧/所述"），
-            # 视为虚词序列而非技术术语，不参与引用基础检查。
-            if _is_noisy_ngram(term):
-                continue
-            if term not in cur_defined:
-                start = max(0, p - 8)
-                end = min(len(text), p + 2 + n + 8)
-                ctx = text[start:end].replace("\n", " ")
-                results.append({
-                    "kind": "antecedent",
-                    "claim_no": no,
-                    "para_idx": info.para_indices[0] if info.para_indices else -1,
-                    "context": ctx,
-                    "message": f"『所述{term}』缺少引用基础",
-                    "suggestion": "",
-                })
+            n_term = "".join(term_chars) if len(term_chars) == n else ""
+
+            # 2) 动态截断术语（只要开了截断就要算）
+            trunc_term = ""
+            if use_dynamic_truncate:
+                trunc_term = _extract_term_dynamic_truncate(
+                    text, p + 2, bl_first_chars, max_len=DYN_MAX_LEN
+                )
+
+            # 决定本次"所述"的报告策略
+            if not use_dynamic_truncate and not use_dynamic_fallback:
+                # 默认：n 字定值
+                if not n_term:
+                    continue
+                if n_term in ignore_set or _is_noisy_ngram(n_term):
+                    continue
+                if n_term in cur_defined:
+                    continue
+                missing_term = n_term
+                ctx_term_len = n
+            elif use_dynamic_truncate and not use_dynamic_fallback:
+                # 仅截断：以截断结果为准
+                if not trunc_term or len(trunc_term) < 2:
+                    continue
+                if trunc_term in ignore_set or _is_noisy_ngram(trunc_term):
+                    continue
+                if (trunc_term in cur_defined_free) or (trunc_term in cur_defined):
+                    continue
+                missing_term = trunc_term
+                ctx_term_len = len(trunc_term)
+            elif use_dynamic_fallback and not use_dynamic_truncate:
+                # 仅回退：从 n 字开始往下缩
+                if not n_term:
+                    continue
+                if n_term in ignore_set or _is_noisy_ngram(n_term):
+                    continue
+                hit = False
+                for L_try in range(n, 1, -1):
+                    sub = n_term[:L_try]
+                    if sub in ignore_set:
+                        hit = True
+                        break
+                    if (sub in cur_defined) or (sub in cur_defined_free):
+                        hit = True
+                        break
+                if hit:
+                    continue
+                missing_term = n_term
+                ctx_term_len = n
+            else:
+                # 同时开启：先截断，再回退；只要任一前缀匹配就放过
+                # 这是误判最低的组合策略
+                base_term = trunc_term
+                if not base_term or len(base_term) < 2:
+                    # 截断失败时退化为 n 字
+                    base_term = n_term
+                if not base_term or len(base_term) < 2:
+                    continue
+                if base_term in ignore_set or _is_noisy_ngram(base_term):
+                    continue
+                hit = False
+                for L_try in range(len(base_term), 1, -1):
+                    sub = base_term[:L_try]
+                    if sub in ignore_set:
+                        hit = True
+                        break
+                    if (sub in cur_defined) or (sub in cur_defined_free):
+                        hit = True
+                        break
+                if hit:
+                    continue
+                # 还要再多一道兜底：base_term 的最末字往往是边界字，
+                # 单独再用 n_term（n 字定值）兜一遍可避免漏放过同义噪声
+                if n_term and (
+                    n_term in cur_defined or n_term in cur_defined_free
+                ):
+                    continue
+                missing_term = base_term
+                ctx_term_len = len(base_term)
+
+            start = max(0, p - 8)
+            end = min(len(text), p + 2 + ctx_term_len + 8)
+            ctx = text[start:end].replace("\n", " ")
+            results.append({
+                "kind": "antecedent",
+                "claim_no": no,
+                "para_idx": info.para_indices[0] if info.para_indices else -1,
+                "context": ctx,
+                "message": f"『所述{missing_term}』缺少引用基础",
+                "suggestion": "",
+            })
         # 写回
         defined_by_claim[no] = cur_defined
+        defined_free_by_claim[no] = cur_defined_free
     return results
 
 
@@ -532,7 +738,10 @@ def check_term_consistency(claims: dict, n: int, ignore_set: set) -> list:
 # ─────────────────────────────────────────
 def run_all_checks(paragraphs, start_idx: int, end_idx: int,
                    n: int, ignore_set=None, vague_words=None,
-                   check_term: bool = False) -> list:
+                   check_term: bool = False,
+                   use_dynamic_truncate: bool = False,
+                   use_dynamic_fallback: bool = False,
+                   boundary_blacklist=None) -> list:
     """
     一次性运行全部检查，返回合并后的结果列表。
 
@@ -544,6 +753,8 @@ def run_all_checks(paragraphs, start_idx: int, end_idx: int,
         vague_words:  覆盖默认 VAGUE_WORDBANK
         check_term:   是否执行「术语不一致」检查；默认 False，因为该检查
                       噪音较大，只有用户在 UI 中明确勾选时才会运行
+        use_dynamic_truncate / use_dynamic_fallback / boundary_blacklist:
+                      引用基础检查的两个降噪开关，详见 check_antecedent_basis
     """
     claims = parse_claims(paragraphs, start_idx, end_idx)
     if not claims:
@@ -554,7 +765,12 @@ def run_all_checks(paragraphs, start_idx: int, end_idx: int,
     results.extend(check_multi_dependency(claims))
     results.extend(check_claim_numbering(claims))
     results.extend(check_vague_terms(claims, vague_words))
-    results.extend(check_antecedent_basis(claims, n, ignore_set or set()))
+    results.extend(check_antecedent_basis(
+        claims, n, ignore_set or set(),
+        use_dynamic_truncate=use_dynamic_truncate,
+        use_dynamic_fallback=use_dynamic_fallback,
+        boundary_blacklist=boundary_blacklist,
+    ))
     if check_term:
         results.extend(check_term_consistency(claims, n, ignore_set or set()))
 

@@ -43,6 +43,11 @@ def get_vague_wordbank_path() -> str:
     return os.path.join(get_config_dir(), "vague_wordbank.json")
 
 
+def get_boundary_blacklist_path() -> str:
+    """引用基础检查「动态截断黑名单」JSON 路径"""
+    return os.path.join(get_config_dir(), "boundary_blacklist.json")
+
+
 # ─────────────────────────────────────────
 # QSettings 封装：界面配置
 # ─────────────────────────────────────────
@@ -238,6 +243,60 @@ def get_builtin_vague_wordbank() -> list:
     try:
         from claim_check import VAGUE_WORDBANK
         return list(VAGUE_WORDBANK)
+    except Exception:
+        return []
+
+
+def load_boundary_blacklist() -> list:
+    """
+    读取「动态截断黑名单」词库：用于引用基础检查中识别术语边界的虚词集合。
+
+    - 若用户未曾保存过，则返回 claim_check.DEFAULT_BOUNDARY_BLACKLIST 内置默认
+    - 若已存在用户文件，则以用户文件为准
+    """
+    path = get_boundary_blacklist_path()
+    if not os.path.exists(path):
+        try:
+            from claim_check import DEFAULT_BOUNDARY_BLACKLIST
+            return list(DEFAULT_BOUNDARY_BLACKLIST)
+        except Exception:
+            return []
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if isinstance(data, list):
+            seen = set()
+            result = []
+            for x in data:
+                s = str(x).strip()
+                if s and s not in seen:
+                    seen.add(s)
+                    result.append(s)
+            return result
+    except Exception:
+        return []
+    return []
+
+
+def save_boundary_blacklist(items) -> None:
+    """保存「动态截断黑名单」词库"""
+    path = get_boundary_blacklist_path()
+    cleaned = []
+    seen = set()
+    for x in items:
+        s = str(x).strip()
+        if s and s not in seen:
+            seen.add(s)
+            cleaned.append(s)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(cleaned, f, ensure_ascii=False, indent=2)
+
+
+def get_builtin_boundary_blacklist() -> list:
+    """返回内置黑名单（用于「恢复内置」按钮）"""
+    try:
+        from claim_check import DEFAULT_BOUNDARY_BLACKLIST
+        return list(DEFAULT_BOUNDARY_BLACKLIST)
     except Exception:
         return []
 
