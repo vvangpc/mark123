@@ -512,11 +512,24 @@ def check_antecedent_basis(claims: dict, n: int, ignore_set: set,
             m.start() for m in re.finditer(r'所述', text)
             if not _is_in_citation_formula(text, m.start())
         ]
-        # 引用区窗口：默认 n 字；动态模式下放宽到 DYN_MAX_LEN
-        span_len = DYN_MAX_LEN if dyn_mode else n
+        # 引用区窗口：
+        #   • 默认（无动态模式）  → n 字
+        #   • 仅 use_dynamic_fallback → DYN_MAX_LEN 字（回退会试 n..2 字所有前缀）
+        #   • 启用 use_dynamic_truncate → 用同一套截断逻辑算出的实际术语长度
+        #     这避免了「12 字窗口把后面真正定义的术语也吞掉」的问题
+        #     例：「所述垂直延伸板段的端部设有挂钩（10），所述挂钩…」
+        #         如果窗口是固定 12 字，会把"挂"扣掉，导致"挂钩"收不进定义集；
+        #         用截断逻辑算出真实长度 7（停在"端部"），"挂钩"就能正常入集。
         suoshu_span = set()
         for p in suoshu_positions:
-            for k in range(p + 2, min(p + 2 + span_len, len(text))):
+            if use_dynamic_truncate:
+                ref_term = _extract_term_dynamic_truncate(
+                    text, p + 2, bl_first_chars, max_len=DYN_MAX_LEN
+                )
+                ref_len = len(ref_term) if ref_term else n
+            else:
+                ref_len = DYN_MAX_LEN if dyn_mode else n
+            for k in range(p + 2, min(p + 2 + ref_len, len(text))):
                 suoshu_span.add(k)
         # 先扫一遍"非所述"上下文中的 n 字 CJK 子串 → 记入定义集
         # 此处用 skip_noise=True 过滤掉含"的/在/是"等停用字的子串
