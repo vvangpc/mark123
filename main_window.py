@@ -1652,7 +1652,64 @@ class MainWindow(QMainWindow):
             if reply != QMessageBox.StandardButton.Yes:
                 return
 
-        action_name = self._infer_output_action_name()
+        # ── 弹出生成确认卡片，允许自定义后缀 ──
+        default_action = self._infer_output_action_name()
+        base_name = os.path.splitext(
+            os.path.basename(self.current_file_path)
+        )[0]
+        if base_name.endswith("_已标注") or base_name.endswith("_已清洗"):
+            base_name = base_name.rsplit("_", 1)[0]
+
+        dlg = QDialog(self)
+        dlg.setWindowTitle("文件生成")
+        dlg.setMinimumWidth(420)
+        dlg_layout = QVBoxLayout(dlg)
+        dlg_layout.setSpacing(12)
+
+        dlg_layout.addWidget(QLabel(
+            "即将生成文件。可在下方自定义后缀名称，留空则使用自动推断的默认值。"
+        ))
+
+        suffix_row = QHBoxLayout()
+        suffix_row.addWidget(QLabel("文件后缀："))
+        suffix_edit = QLineEdit()
+        suffix_edit.setPlaceholderText(f"默认: {default_action}")
+        suffix_edit.setToolTip(
+            f"留空将自动使用「{default_action}」作为后缀。\n"
+            "输入自定义内容后，文件名变为 原名_自定义.docx"
+        )
+        suffix_row.addWidget(suffix_edit, 1)
+        dlg_layout.addLayout(suffix_row)
+
+        preview_label = QLabel()
+        preview_label.setObjectName("subtitleLabel")
+        preview_label.setWordWrap(True)
+
+        def _update_preview():
+            custom = suffix_edit.text().strip()
+            action = custom if custom else default_action
+            preview_label.setText(f"预览：{base_name}_{action}.docx")
+
+        suffix_edit.textChanged.connect(lambda _: _update_preview())
+        _update_preview()
+        dlg_layout.addWidget(preview_label)
+
+        btn_row = QHBoxLayout()
+        btn_row.addStretch()
+        ok_btn = QPushButton("生成")
+        ok_btn.setObjectName("primaryBtn")
+        ok_btn.clicked.connect(dlg.accept)
+        cancel_btn = QPushButton("取消")
+        cancel_btn.clicked.connect(dlg.reject)
+        btn_row.addWidget(ok_btn)
+        btn_row.addWidget(cancel_btn)
+        dlg_layout.addLayout(btn_row)
+
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+
+        custom_suffix = suffix_edit.text().strip()
+        action_name = custom_suffix if custom_suffix else default_action
         output_path = self._generate_output_path(action_name)
         try:
             self.doc_data['document'].save(output_path)

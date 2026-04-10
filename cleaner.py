@@ -48,17 +48,18 @@ def remove_suoshu(paragraphs, sections: dict, selected_section_names: list) -> i
 
 # 半角 → 全角（仅在紧邻中文字符时替换，避免误伤英文/数字）
 # 注意：不包含 < > ，避免误伤撰写中作为「大于/小于」使用的数学符号
+# 注意：半角句点 “.” 不放在此 map 里，改由 _safe_replace_dot 单独处理，
+#        以避免把权利要求书序号 “1.” “2.” 错误替换成 “1。” “2。”
 _HALFWIDTH_MAP = {
     ",": "，",
     ";": "；",
     ":": "：",
     "?": "？",
     "!": "！",
-    ".": "。",
     "(": "（",
     ")": "）",
-    "'": "'",   # 半角直引号 → 中文左单引号
-    '"': "“",   # 半角直引号 → 中文左双引号
+    "'": "‘",   # half-width single quote -> CJK left single quote
+    '"': "“",   # half-width double quote -> CJK left double quote
 }
 
 # 全角 → 半角（默认不启用；用户在 UI 勾选时执行）
@@ -94,6 +95,32 @@ def _build_punct_replace_dict(paragraph_text: str) -> dict:
         if re.search(pattern, paragraph_text):
             result[half] = full
     return result
+
+
+# 半角句点 "." 的安全替换正则：
+# 匹配"中文 + ."或". + 中文"，但排除"数字 + ."（权利要求序号 1. 2. 等）
+_SAFE_DOT_RE = re.compile(
+    rf'(?<!\d)\.(?={_CJK})'      # 非数字（或行首）+ . + 中文
+    rf'|(?<={_CJK})\.'           # 中文 + .
+)
+
+
+def _safe_replace_dot_in_paragraph(paragraph) -> bool:
+    """
+    将段落中紧邻中文的半角句点 . 替换为全角句号 。，
+    但跳过「数字 + .」的序号格式（如 "1." "12."）。
+
+    直接操作 paragraph.runs 的 w:t 文本；返回是否有替换发生。
+    """
+    changed = False
+    for run in paragraph.runs:
+        for wt in run._r.xpath('.//w:t'):
+            old = wt.text or ""
+            new = _SAFE_DOT_RE.sub("。", old)
+            if new != old:
+                wt.text = new
+                changed = True
+    return changed
 
 
 def _build_fullwidth_replace_dict(paragraph_text: str) -> dict:
@@ -157,6 +184,9 @@ def unify_halfwidth_punct(paragraphs, sections: dict = None) -> int:
     将中文上下文中的半角标点替换为全角。
     若传入 sections，则只处理各章节范围内的段落；否则处理全文。
     返回实际发生替换的段落数。
+
+    半角句点 "." 单独处理：跳过「数字 + .」序号格式（如 1. 2.），
+    避免把权利要求书编号替换成 1。2。
     """
     count = 0
 
@@ -172,8 +202,15 @@ def unify_halfwidth_punct(paragraphs, sections: dict = None) -> int:
         text = para.text
         if not text.strip():
             continue
+        touched = False
+        # 1) 常规半角 → 全角（不含句点 "."）
         replace_dict = _build_punct_replace_dict(text)
         if replace_dict and annotate_paragraph_safe(para, replace_dict):
+            touched = True
+        # 2) 半角句点 "." → "。" 的安全替换（跳过 "数字." 序号格式）
+        if _safe_replace_dot_in_paragraph(para):
+            touched = True
+        if touched:
             count += 1
     return count
 
