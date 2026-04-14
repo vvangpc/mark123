@@ -350,18 +350,28 @@ def parse_document(doc_path: str) -> dict:
     # 非空正文段落标记为"说明书摘要"的起点。
     _infer_abstract_boundary(paragraphs, sections, title_positions)
 
-    # 第四步：在"附图说明"章节中寻找附图标记段落
+    # 第四步：在"附图说明"章节中寻找附图标记段落（可能跨多个段落）
     mark_para = None
     mark_para_idx = None
+    mark_paras = []  # 所有附图标记段落
+
+    _MARK_ENTRY_RE = re.compile(r'[1-9]\d*\s*[-\-—–、.．,:：\s]\s*[\u4e00-\u9fa5a-zA-Z]')
 
     if "附图说明" in sections:
         sec = sections["附图说明"]
         for i in range(sec.start_idx, sec.end_idx):
             text = paragraphs[i].text.strip()
-            if "附图标记" in text or re.search(r'[1-9]\s*[-\-—–]\s*[\u4e00-\u9fa5]', text):
-                mark_para = paragraphs[i]
-                mark_para_idx = i
-                break
+            if not text:
+                if mark_paras:
+                    break  # 空段落表示标记区域结束
+                continue
+            if "附图标记" in text or _MARK_ENTRY_RE.search(text):
+                if mark_para is None:
+                    mark_para = paragraphs[i]
+                    mark_para_idx = i
+                mark_paras.append(paragraphs[i])
+            elif mark_paras:
+                break  # 遇到非标记段落，标记区域结束
 
     # 如果在附图说明中没找到，全文搜索
     if mark_para is None:
@@ -370,6 +380,7 @@ def parse_document(doc_path: str) -> dict:
             if "附图标记" in text and re.search(r'[1-9]', text):
                 mark_para = para
                 mark_para_idx = i
+                mark_paras = [para]
                 break
 
     return {
@@ -378,6 +389,7 @@ def parse_document(doc_path: str) -> dict:
         'paragraphs': paragraphs,
         'mark_para': mark_para,
         'mark_para_idx': mark_para_idx,
+        'mark_paras': mark_paras,
         'title_positions': title_positions,
     }
 

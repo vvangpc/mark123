@@ -19,7 +19,7 @@ from PyQt6.QtGui import (
 )
 
 from doc_parser import parse_document, get_section_text
-from mark_extractor import extract_marks_from_paragraph, marks_to_display_text, parse_marks_from_display_text
+from mark_extractor import extract_marks_from_paragraph, extract_marks_from_paragraphs, marks_to_display_text, parse_marks_from_display_text
 from annotator import (
     smart_annotate_section, build_claims_replace_dict,
     build_implementation_replace_dict, annotate_section,
@@ -1515,8 +1515,12 @@ class MainWindow(QMainWindow):
         if not self.doc_data:
             return
 
+        mark_paras = self.doc_data.get('mark_paras', [])
         mark_para = self.doc_data.get('mark_para')
-        if mark_para:
+        if mark_paras:
+            marks = extract_marks_from_paragraphs(mark_paras)
+            self.current_marks = marks
+        elif mark_para:
             marks = extract_marks_from_paragraph(mark_para)
             self.current_marks = marks
             display = marks_to_display_text(marks)
@@ -1537,6 +1541,7 @@ class MainWindow(QMainWindow):
         except Exception as e:
             self._show_toast(f"重新解析失败：{e}", "error")
             return
+        mark_paras = fresh.get('mark_paras', [])
         mark_para = fresh.get('mark_para')
         if not mark_para:
             self._show_toast("原始文档中未找到附图标记段落", "warning")
@@ -1545,7 +1550,7 @@ class MainWindow(QMainWindow):
             self.mark_count_label.setText("未找到附图标记段落")
             return
 
-        marks = extract_marks_from_paragraph(mark_para)
+        marks = extract_marks_from_paragraphs(mark_paras) if mark_paras else extract_marks_from_paragraph(mark_para)
         self.current_marks = marks
         self.marks_edit.setPlainText(marks_to_display_text(marks))
         self.mark_count_label.setText(f"共 {len(marks)} 个标记")
