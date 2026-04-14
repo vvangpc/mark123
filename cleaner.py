@@ -479,6 +479,23 @@ def check_duplicate_words(paragraphs, sections: dict = None,
             # 过滤用户自定义忽略词库（匹配 unit 或 full）
             if ignore_set and (unit in ignore_set or full in ignore_set):
                 continue
+            # 检查重复片段是否被忽略词在原文中的出现所覆盖
+            if ignore_set:
+                match_s, match_e = m.start(), m.end()
+                covered = False
+                for ig in ignore_set:
+                    if len(ig) <= len(full):
+                        continue
+                    idx = text.find(ig)
+                    while idx != -1:
+                        if idx <= match_s and idx + len(ig) >= match_e:
+                            covered = True
+                            break
+                        idx = text.find(ig, idx + 1)
+                    if covered:
+                        break
+                if covered:
+                    continue
             # 过滤单字「的的、了了」等高频虚词时可后期再加（暂保留）
             key = (i, full)
             if key in seen_keys:
