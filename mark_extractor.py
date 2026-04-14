@@ -70,6 +70,22 @@ def extract_marks_from_paragraph(paragraph) -> dict[int, str]:
     return extract_marks_from_text(paragraph.text)
 
 
+def extract_marks_from_paragraphs(paragraphs) -> dict[int, str]:
+    """
+    从多个 Paragraph 对象中提取标记（合并文本后统一解析）。
+
+    参数:
+        paragraphs: python-docx Paragraph 对象列表
+
+    返回:
+        {数字: 名称}
+    """
+    if not paragraphs:
+        return {}
+    combined = "；".join(p.text for p in paragraphs if p.text)
+    return extract_marks_from_text(combined)
+
+
 def marks_to_display_text(marks: dict[int, str]) -> str:
     """
     将标记字典转为显示文本。
