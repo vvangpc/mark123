@@ -163,6 +163,29 @@ QPushButton#smallBtn:hover {
     border-color: #00bfa5;
 }
 
+/* 表格行内「忽略」等操作按钮：无底无边，仅文字；字号与行内其它文字一致（亮色主题） */
+QPushButton#rowActionBtn {
+    padding: 0;
+    margin: 0;
+    font-size: 13px;
+    font-weight: 600;
+    min-width: 56px;
+    color: #00e5c7;
+    background-color: transparent;
+    border: none;
+    text-align: center;
+}
+
+QPushButton#rowActionBtn:hover {
+    color: #ffffff;
+    background-color: transparent;
+}
+
+QPushButton#rowActionBtn:pressed {
+    color: #00bfa5;
+    background-color: transparent;
+}
+
 QPushButton#dangerBtn {
     background-color: rgba(255, 82, 82, 0.15);
     border: 1px solid rgba(255, 82, 82, 0.3);
@@ -295,6 +318,48 @@ QGroupBox::title {
     color: #00bfa5;
 }
 
+/* ===== 表格 ===== */
+QTableWidget, QTableView {
+    background-color: rgba(15, 20, 25, 0.6);
+    alternate-background-color: rgba(255, 255, 255, 0.04);
+    color: #e0e0e0;
+    gridline-color: rgba(255, 255, 255, 0.08);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    border-radius: 10px;
+    selection-background-color: rgba(0, 191, 165, 0.35);
+    selection-color: #ffffff;
+}
+
+QTableWidget::item, QTableView::item {
+    padding: 4px 6px;
+    border: none;
+}
+
+QTableWidget::item:selected, QTableView::item:selected {
+    background-color: rgba(0, 191, 165, 0.35);
+    color: #ffffff;
+}
+
+QHeaderView::section {
+    background-color: rgba(15, 20, 25, 0.9);
+    color: #00bfa5;
+    border: none;
+    border-right: 1px solid rgba(255, 255, 255, 0.06);
+    border-bottom: 1px solid rgba(255, 255, 255, 0.12);
+    padding: 6px 8px;
+    font-weight: bold;
+}
+
+QHeaderView::section:last {
+    border-right: none;
+}
+
+QTableCornerButton::section {
+    background-color: rgba(15, 20, 25, 0.9);
+    border: none;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.12);
+}
+
 /* ===== 消息框 ===== */
 QMessageBox {
     background-color: #0f1419;
@@ -377,10 +442,8 @@ QPushButton#nPresetBtn:checked {
 }
 
 QSpinBox#nCustomSpin {
-    min-width: 78px;
-    max-width: 84px;
-    min-height: 26px;
-    padding: 2px 6px;
+    min-height: 28px;
+    padding: 2px 10px;
     font-size: 13px;
     font-weight: 600;
     color: #ffffff;
@@ -392,33 +455,6 @@ QSpinBox#nCustomSpin {
 
 QSpinBox#nCustomSpin:focus {
     border-color: #00bfa5;
-}
-
-QSpinBox#nCustomSpin::up-button,
-QSpinBox#nCustomSpin::down-button {
-    subcontrol-origin: border;
-    width: 16px;
-    border: none;
-    background: transparent;
-}
-
-QSpinBox#nCustomSpin::up-button { subcontrol-position: top right; }
-QSpinBox#nCustomSpin::down-button { subcontrol-position: bottom right; }
-
-QSpinBox#nCustomSpin::up-arrow {
-    image: none;
-    width: 0; height: 0;
-    border-left: 4px solid transparent;
-    border-right: 4px solid transparent;
-    border-bottom: 5px solid #b0bec5;
-}
-
-QSpinBox#nCustomSpin::down-arrow {
-    image: none;
-    width: 0; height: 0;
-    border-left: 4px solid transparent;
-    border-right: 4px solid transparent;
-    border-top: 5px solid #b0bec5;
 }
 """
 
@@ -587,6 +623,29 @@ QPushButton#smallBtn:hover {
     border-color: #00bfa5;
 }
 
+/* 表格行内「忽略」等操作按钮：无底无边，仅文字（文字即按钮） */
+QPushButton#rowActionBtn {
+    padding: 0;
+    margin: 0;
+    font-size: 13px;
+    font-weight: 600;
+    min-width: 56px;
+    color: #00897b;
+    background-color: transparent;
+    border: none;
+    text-align: center;
+}
+
+QPushButton#rowActionBtn:hover {
+    color: #00695c;
+    background-color: transparent;
+}
+
+QPushButton#rowActionBtn:pressed {
+    color: #004d40;
+    background-color: transparent;
+}
+
 QPushButton#dangerBtn {
     background-color: rgba(255, 82, 82, 0.05);
     border: 1px solid rgba(255, 82, 82, 0.3);
@@ -719,6 +778,48 @@ QGroupBox::title {
     color: #009688;
 }
 
+/* ===== 表格 ===== */
+QTableWidget, QTableView {
+    background-color: #ffffff;
+    alternate-background-color: #f5f7fa;
+    color: #2c3e50;
+    gridline-color: rgba(0, 0, 0, 0.08);
+    border: 1px solid rgba(0, 0, 0, 0.1);
+    border-radius: 10px;
+    selection-background-color: rgba(0, 191, 165, 0.25);
+    selection-color: #263238;
+}
+
+QTableWidget::item, QTableView::item {
+    padding: 4px 6px;
+    border: none;
+}
+
+QTableWidget::item:selected, QTableView::item:selected {
+    background-color: rgba(0, 191, 165, 0.25);
+    color: #263238;
+}
+
+QHeaderView::section {
+    background-color: #eceff1;
+    color: #00796b;
+    border: none;
+    border-right: 1px solid rgba(0, 0, 0, 0.05);
+    border-bottom: 1px solid rgba(0, 0, 0, 0.1);
+    padding: 6px 8px;
+    font-weight: bold;
+}
+
+QHeaderView::section:last {
+    border-right: none;
+}
+
+QTableCornerButton::section {
+    background-color: #eceff1;
+    border: none;
+    border-bottom: 1px solid rgba(0, 0, 0, 0.1);
+}
+
 /* ===== 消息框 ===== */
 QMessageBox {
     background-color: #ffffff;
@@ -801,10 +902,8 @@ QPushButton#nPresetBtn:checked {
 }
 
 QSpinBox#nCustomSpin {
-    min-width: 78px;
-    max-width: 84px;
-    min-height: 26px;
-    padding: 2px 6px;
+    min-height: 28px;
+    padding: 2px 10px;
     font-size: 13px;
     font-weight: 600;
     color: #263238;
@@ -817,32 +916,5 @@ QSpinBox#nCustomSpin {
 
 QSpinBox#nCustomSpin:focus {
     border-color: #00bfa5;
-}
-
-QSpinBox#nCustomSpin::up-button,
-QSpinBox#nCustomSpin::down-button {
-    subcontrol-origin: border;
-    width: 16px;
-    border: none;
-    background: transparent;
-}
-
-QSpinBox#nCustomSpin::up-button { subcontrol-position: top right; }
-QSpinBox#nCustomSpin::down-button { subcontrol-position: bottom right; }
-
-QSpinBox#nCustomSpin::up-arrow {
-    image: none;
-    width: 0; height: 0;
-    border-left: 4px solid transparent;
-    border-right: 4px solid transparent;
-    border-bottom: 5px solid #546e7a;
-}
-
-QSpinBox#nCustomSpin::down-arrow {
-    image: none;
-    width: 0; height: 0;
-    border-left: 4px solid transparent;
-    border-right: 4px solid transparent;
-    border-top: 5px solid #546e7a;
 }
 """

@@ -5,7 +5,17 @@ cleaner.py — 文本清洗功能模块
 所有文本写入操作复用 annotator.annotate_paragraph_safe()，保证格式安全。
 """
 import re
+from functools import lru_cache
 from annotator import annotate_paragraph_safe
+
+# 权利要求序号行头（如 "1." / "2、" / "3．"）；与 claim_check._CLAIM_HEAD_RE 语义一致
+_CLAIM_HEAD_RE = re.compile(r'^\s*(\d+)\s*[\.\．\、]')
+
+
+@lru_cache(maxsize=64)
+def _dup_pattern(min_len: int, max_len: int) -> re.Pattern:
+    """缓存「连续重复字词」正则：(X){min..max} 紧跟 1 次以上 X。"""
+    return re.compile(r'(.{%d,%d})\1+' % (min_len, max_len))
 
 
 def _get_active_wordbank() -> list:
@@ -352,11 +362,10 @@ def _make_locator_with_paragraphs(sections: dict, paragraphs):
 
     para_to_claim_no = {}
     if claims_section is not None:
-        claim_pat = re.compile(r'^\s*(\d+)\s*[\.\．\、]')
         current_no = None
         for i in range(claims_section.start_idx, claims_section.end_idx):
             text = paragraphs[i].text if 0 <= i < len(paragraphs) else ""
-            m = claim_pat.match(text) if text else None
+            m = _CLAIM_HEAD_RE.match(text) if text else None
             if m:
                 current_no = m.group(1)
             if current_no is not None:
@@ -457,9 +466,7 @@ def check_duplicate_words(paragraphs, sections: dict = None,
         target = range(len(paragraphs))
 
     locate = _make_locator_with_paragraphs(sections or {}, paragraphs)
-    # 一个综合正则匹配 1..max_len 长度的连续重复
-    # 使用反向引用 \1{1,}：匹配 (X) 紧跟 1 次以上 X
-    pattern = re.compile(r'(.{%d,%d})\1+' % (min_len, max_len))
+    pattern = _dup_pattern(min_len, max_len)
 
     seen_keys = set()  # 同段落同 wrong 去重
 
