@@ -100,6 +100,12 @@ _CITE_RE = re.compile(
     r'([0-9０-９]+(?:\s*(?:[,，、和或至\-－~～]|到|或者)\s*[0-9０-９]+)*)'
     r'\s*中?\s*(?:任(?:意)?一?项?)?\s*所述'
 )
+_RANGE_RE = re.compile(r'\s*(\d+)\s*(?:[-－~～]|至|到)\s*(\d+)')
+_NUM_RE = re.compile(r'\d+')
+_SUOSHU_RE = re.compile(r'所述')
+
+# 动态截断时术语最大保留字符数，超过视为冗余描述
+DYN_TERM_MAX_LEN = 12
 
 
 def _norm_digits(s: str) -> str:
@@ -130,7 +136,7 @@ def _extract_cite_nums(num_str: str) -> tuple:
     # 处理范围
     nums = set()
     if mode == "range":
-        m = re.match(r'\s*(\d+)\s*(?:[-－~～]|至|到)\s*(\d+)', s)
+        m = _RANGE_RE.match(s)
         if m:
             a, b = int(m.group(1)), int(m.group(2))
             if a <= b:
@@ -139,7 +145,7 @@ def _extract_cite_nums(num_str: str) -> tuple:
                 nums.update(range(b, a + 1))
             return nums, mode
     # 通用：抓所有数字
-    for m in re.finditer(r'\d+', s):
+    for m in _NUM_RE.finditer(s):
         nums.add(int(m.group(0)))
     return nums, mode
 
@@ -459,33 +465,39 @@ def check_antecedent_basis(claims: dict, n: int, ignore_set: set,
     _BLACKLIST_WORDS_CACHE = bl_words
     dyn_mode = use_dynamic_truncate or use_dynamic_fallback
     # 动态模式下，术语长度可变；用更宽松的最大长度做候选
-    DYN_MAX_LEN = 12
+    DYN_MAX_LEN = DYN_TERM_MAX_LEN
 
-    def _collect_freeform_terms(text: str, suoshu_span: set) -> set:
+    def _collect_freeform_terms(text: str, suoshu_mask: list) -> set:
         """
         把文本拆成"连续 CJK 段"，对每段产生所有长度 2..DYN_MAX_LEN 的子串
-        作为"已定义术语候选"。位于 suoshu_span 内的位置视为引用，不参与定义。
+        作为"已定义术语候选"。与 suoshu_mask 标记区间相交的子串视为引用，跳过。
+
+        优化：用 next_suoshu[i] 表示"从 i 起首个被标记位置"做 O(1) 重叠判断，
+        避免原实现里 any(pos in set for ...) 的 O(L_sub) 开销。
         """
         out: set = set()
         L = len(text)
+        # next_suoshu[i] = 从位置 i 起首个 mask=True 的下标（含 i），越界返回 L
+        next_suoshu = [L] * (L + 1)
+        for i in range(L - 1, -1, -1):
+            next_suoshu[i] = i if suoshu_mask[i] else next_suoshu[i + 1]
+
         i = 0
         while i < L:
             if not _CJK_RE.match(text[i]):
                 i += 1
                 continue
-            # 找到一段连续 CJK
             j = i
             while j < L and _CJK_RE.match(text[j]):
                 j += 1
-            # 对这段 [i, j) 抽所有长度 2..DYN_MAX_LEN 的子串，
-            # 但需要剔除与 suoshu_span 完全重叠的子串
             seg_len = j - i
-            for L_sub in range(2, min(DYN_MAX_LEN, seg_len) + 1):
+            max_sub = min(DYN_MAX_LEN, seg_len)
+            for L_sub in range(2, max_sub + 1):
                 for k in range(i, j - L_sub + 1):
-                    if any((pos in suoshu_span) for pos in range(k, k + L_sub)):
+                    # 子串 [k, k+L_sub) 与 suoshu_mask 有交集 ⇔ next_suoshu[k] < k+L_sub
+                    if next_suoshu[k] < k + L_sub:
                         continue
-                    sub = text[k:k + L_sub]
-                    out.add(sub)
+                    out.add(text[k:k + L_sub])
             i = j
         return out
 
@@ -509,7 +521,7 @@ def check_antecedent_basis(claims: dict, n: int, ignore_set: set,
         cur_defined_free = set(base_free)
         # 过滤掉"权利要求N所述"中的"所述"（属于引用语公式，不是反向引用）
         suoshu_positions = [
-            m.start() for m in re.finditer(r'所述', text)
+            m.start() for m in _SUOSHU_RE.finditer(text)
             if not _is_in_citation_formula(text, m.start())
         ]
         # 引用区窗口：
@@ -520,36 +532,45 @@ def check_antecedent_basis(claims: dict, n: int, ignore_set: set,
         #     例：「所述垂直延伸板段的端部设有挂钩（10），所述挂钩…」
         #         如果窗口是固定 12 字，会把"挂"扣掉，导致"挂钩"收不进定义集；
         #         用截断逻辑算出真实长度 7（停在"端部"），"挂钩"就能正常入集。
-        suoshu_span = set()
+        # 优化：trunc_term 每个位置最多算一次，复用在 suoshu_span 构造 + 主校验
+        text_len = len(text)
+        trunc_term_cache: dict = {}
+        suoshu_mask = [False] * text_len
         for p in suoshu_positions:
             if use_dynamic_truncate:
-                ref_term = _extract_term_dynamic_truncate(
+                t = _extract_term_dynamic_truncate(
                     text, p + 2, bl_first_chars, max_len=DYN_MAX_LEN
                 )
-                ref_len = len(ref_term) if ref_term else n
+                trunc_term_cache[p] = t
+                ref_len = len(t) if t else n
             else:
                 ref_len = DYN_MAX_LEN if dyn_mode else n
-            for k in range(p + 2, min(p + 2 + ref_len, len(text))):
-                suoshu_span.add(k)
+            end = min(p + 2 + ref_len, text_len)
+            for k in range(p + 2, end):
+                suoshu_mask[k] = True
         # 先扫一遍"非所述"上下文中的 n 字 CJK 子串 → 记入定义集
         # 此处用 skip_noise=True 过滤掉含"的/在/是"等停用字的子串
+        # 预计算 next_suoshu[i] 用于 O(1) 重叠判断
+        next_suoshu = [text_len] * (text_len + 1)
+        for i in range(text_len - 1, -1, -1):
+            next_suoshu[i] = i if suoshu_mask[i] else next_suoshu[i + 1]
+
         for seg, idx in _sliding_cjk_ngrams(text, n, skip_noise=True):
             if seg in ignore_set:
                 continue
             # 如果该子串位于"所述 + seg"的窗口内 → 视为引用，不当作首次定义
-            range_positions = set(range(idx, idx + n))
-            if range_positions & suoshu_span:
+            if next_suoshu[idx] < idx + n:
                 continue
             cur_defined.add(seg)
         # 动态模式：额外收集变长子串作为"自由形式"定义集
         if dyn_mode:
-            cur_defined_free |= _collect_freeform_terms(text, suoshu_span)
+            cur_defined_free |= _collect_freeform_terms(text, suoshu_mask)
 
         # ── 提取每个 "所述" 后的术语并校验 ──
         for p in suoshu_positions:
             # 1) 默认 n 字术语（用于既不开截断也不开回退、或回退单独使用时）
             term_chars = []
-            for k in range(p + 2, len(text)):
+            for k in range(p + 2, text_len):
                 ch = text[k]
                 if _CJK_RE.match(ch):
                     term_chars.append(ch)
@@ -559,12 +580,8 @@ def check_antecedent_basis(claims: dict, n: int, ignore_set: set,
                     break
             n_term = "".join(term_chars) if len(term_chars) == n else ""
 
-            # 2) 动态截断术语（只要开了截断就要算）
-            trunc_term = ""
-            if use_dynamic_truncate:
-                trunc_term = _extract_term_dynamic_truncate(
-                    text, p + 2, bl_first_chars, max_len=DYN_MAX_LEN
-                )
+            # 2) 动态截断术语（只要开了截断就要算；已在上面缓存）
+            trunc_term = trunc_term_cache.get(p, "") if use_dynamic_truncate else ""
 
             # 决定本次"所述"的报告策略
             if not use_dynamic_truncate and not use_dynamic_fallback:
@@ -686,7 +703,7 @@ def check_term_consistency(claims: dict, n: int, ignore_set: set) -> list:
         text = info.text
         # 找所有"所述"且不在"权利要求N所述"引用公式里
         suoshu_positions = [
-            m.start() for m in re.finditer(r'所述', text)
+            m.start() for m in _SUOSHU_RE.finditer(text)
             if not _is_in_citation_formula(text, m.start())
         ]
         for p in suoshu_positions:
