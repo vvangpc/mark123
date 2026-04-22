@@ -116,9 +116,9 @@ class TypoTabMixin:
         self.typo_table.setColumnWidth(3, 76)
         self.typo_table.setAlternatingRowColors(True)
         self.typo_table.verticalHeader().setVisible(False)
-        # 行高下限 32px，避免"忽略"等按钮文字在压缩行高下被裁剪
-        self.typo_table.verticalHeader().setDefaultSectionSize(32)
-        self.typo_table.verticalHeader().setMinimumSectionSize(32)
+        # 行高下限 34px，避免"忽略"等按钮文字在压缩行高下被裁剪
+        self.typo_table.verticalHeader().setDefaultSectionSize(34)
+        self.typo_table.verticalHeader().setMinimumSectionSize(34)
         action_v.addWidget(self.typo_table, 1)
 
         layout.addWidget(action_group, 1)
@@ -509,15 +509,15 @@ class TypoTabMixin:
             fix_item = QTableWidgetItem(item.get("suggestion", ""))
             self.typo_table.setItem(row_idx, 2, fix_item)
 
-            # 列3：忽略按钮
+            # 列3：忽略按钮 — 使用 setFixedSize 强制尺寸，绕开 QSS 级联压缩
             ignore_btn = QPushButton("忽略")
             ignore_btn.setObjectName("rowActionBtn")
             ignore_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-            ignore_btn.setMinimumHeight(28)
+            ignore_btn.setFixedSize(68, 28)
             ignore_btn.clicked.connect(self._on_check_ignore_row)
             self.typo_table.setCellWidget(row_idx, 3, ignore_btn)
             # 显式给当前行一个下限行高，避免 Qt 以 item 的 sizeHint 压缩行高
-            self.typo_table.setRowHeight(row_idx, 32)
+            self.typo_table.setRowHeight(row_idx, 34)
 
         # 计数标签 + 应用按钮启用状态
         kind_text = "错别字" if self._current_check_kind == "typo" else "重复字词"
