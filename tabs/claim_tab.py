@@ -253,9 +253,9 @@ class ClaimTabMixin:
         h.setStretchLastSection(False)
         self.claim_result_table.setAlternatingRowColors(True)
         self.claim_result_table.verticalHeader().setVisible(False)
-        # 行高下限 32px，避免"忽略"等按钮文字在压缩行高下被裁剪
-        self.claim_result_table.verticalHeader().setDefaultSectionSize(32)
-        self.claim_result_table.verticalHeader().setMinimumSectionSize(32)
+        # 行高下限 34px，避免"忽略"等按钮文字在压缩行高下被裁剪
+        self.claim_result_table.verticalHeader().setDefaultSectionSize(34)
+        self.claim_result_table.verticalHeader().setMinimumSectionSize(34)
         # 双击「上下文」格（列 2） → 跳转并高亮左侧预览框对应位置
         self.claim_result_table.cellDoubleClicked.connect(
             self._on_claim_result_double_clicked
@@ -463,15 +463,15 @@ class ClaimTabMixin:
             msg_item.setFlags(msg_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
             self.claim_result_table.setItem(row_idx, 3, msg_item)
 
-            # 操作列：忽略（按本条 context 里的关键词）
+            # 操作列：忽略 — 使用 setFixedSize 强制尺寸，绕开 QSS 级联压缩
             btn = QPushButton("忽略")
             btn.setObjectName("rowActionBtn")
             btn.setCursor(Qt.CursorShape.PointingHandCursor)
-            btn.setMinimumHeight(28)
+            btn.setFixedSize(68, 28)
             btn.clicked.connect(lambda _=False, r=row_idx: self._on_claim_ignore_row(r))
             self.claim_result_table.setCellWidget(row_idx, 4, btn)
             # 显式给当前行一个下限行高，避免 Qt 以 item 的 sizeHint 压缩行高
-            self.claim_result_table.setRowHeight(row_idx, 32)
+            self.claim_result_table.setRowHeight(row_idx, 34)
 
     def _show_claim_result_detail(self, row: int):
         """弹出只读对话框显示指定结果行的完整字段（避免 elide 截断）。"""

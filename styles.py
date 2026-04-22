@@ -163,14 +163,14 @@ QPushButton#smallBtn:hover {
     border-color: #00bfa5;
 }
 
-/* 表格行内「忽略」等操作按钮：无底无边，仅文字；字号与行内其它文字一致（亮色主题） */
+/* 表格行内「忽略」等操作按钮：无底无边，仅文字（深色主题）
+   尺寸完全由 Python 层 setFixedSize 决定，这里只给颜色/字体/边框/内边距，
+   不设置 min-width / min-height，避免与 QPushButton 全局规则冲突。 */
 QPushButton#rowActionBtn {
-    padding: 4px 8px;
+    padding: 0 6px;
     margin: 0;
     font-size: 13px;
     font-weight: 600;
-    min-width: 56px;
-    min-height: 22px;
     color: #00e5c7;
     background-color: transparent;
     border: none;
@@ -624,14 +624,14 @@ QPushButton#smallBtn:hover {
     border-color: #00bfa5;
 }
 
-/* 表格行内「忽略」等操作按钮：无底无边，仅文字（文字即按钮） */
+/* 表格行内「忽略」等操作按钮：无底无边，仅文字（亮色主题）
+   尺寸完全由 Python 层 setFixedSize 决定，这里只给颜色/字体/边框/内边距，
+   不设置 min-width / min-height，避免与 QPushButton 全局规则冲突。 */
 QPushButton#rowActionBtn {
-    padding: 4px 8px;
+    padding: 0 6px;
     margin: 0;
     font-size: 13px;
     font-weight: 600;
-    min-width: 56px;
-    min-height: 22px;
     color: #00897b;
     background-color: transparent;
     border: none;
