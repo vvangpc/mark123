@@ -15,7 +15,7 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QThread
 from PyQt6.QtGui import (
-    QDragEnterEvent, QDropEvent, QTextCursor, QTextCharFormat, QColor,
+    QDragEnterEvent, QDropEvent, QTextCursor, QTextCharFormat, QColor, QFont,
 )
 
 from doc_parser import parse_document, get_section_text
@@ -893,9 +893,15 @@ class MainWindow(QMainWindow):
         self.typo_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
         self.typo_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
         self.typo_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
-        self.typo_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
+        self.typo_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.Fixed)
+        self.typo_table.setColumnWidth(3, 72)
         self.typo_table.setAlternatingRowColors(True)
         self.typo_table.verticalHeader().setVisible(False)
+        # 行高给文字留足空间
+        self.typo_table.verticalHeader().setDefaultSectionSize(30)
+        self.typo_table.verticalHeader().setMinimumSectionSize(28)
+        # 「忽略」列用普通文字单元格；单击列 3 触发忽略
+        self.typo_table.cellClicked.connect(self._on_typo_cell_clicked)
         action_v.addWidget(self.typo_table, 1)
 
         layout.addWidget(action_group, 1)
@@ -1129,16 +1135,21 @@ class MainWindow(QMainWindow):
         h.setSectionResizeMode(2, QHeaderView.ResizeMode.Interactive)
         # 说明：Stretch，自动填满剩余空间，右边界不可拖动，操作列始终可见
         h.setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
-        # 操作：固定宽度，吸附在右侧，不会被遮挡
-        h.setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)
+        # 操作：固定宽度，吸附在右侧，保证足以显示「忽略」两字
+        h.setSectionResizeMode(4, QHeaderView.ResizeMode.Fixed)
+        self.claim_result_table.setColumnWidth(4, 72)
         self.claim_result_table.setColumnWidth(2, 240)
         h.setStretchLastSection(False)
         self.claim_result_table.setAlternatingRowColors(True)
         self.claim_result_table.verticalHeader().setVisible(False)
+        self.claim_result_table.verticalHeader().setDefaultSectionSize(30)
+        self.claim_result_table.verticalHeader().setMinimumSectionSize(28)
         # 双击「上下文」格（列 2） → 跳转并高亮左侧预览框对应位置
         self.claim_result_table.cellDoubleClicked.connect(
             self._on_claim_result_double_clicked
         )
+        # 单击「忽略」列（列 4）→ 触发忽略
+        self.claim_result_table.cellClicked.connect(self._on_claim_cell_clicked)
         right_layout.addWidget(self.claim_result_table, 1)
 
         self.claim_splitter.addWidget(right_panel)
@@ -2153,23 +2164,17 @@ class MainWindow(QMainWindow):
         self._start_clean_worker("typo_apply", label, history_label=label,
                                   corrections=corrections)
 
-    def _on_check_ignore_row(self):
-        """点击「忽略」按钮：从表格与缓存中移除该行"""
-        sender = self.sender()
-        if sender is None:
+    def _on_typo_cell_clicked(self, row: int, col: int):
+        """单击「忽略」列 → 从表格与缓存中移除该行。其它列不做处理。"""
+        if col != 3:
             return
-        target_row = -1
-        for r in range(self.typo_table.rowCount()):
-            if self.typo_table.cellWidget(r, 3) is sender:
-                target_row = r
-                break
-        if target_row < 0:
+        if row < 0 or row >= self.typo_table.rowCount():
             return
         # 先回写当前所有编辑，再移除
         self._snapshot_table_to_active_cache()
         data = self._active_cache_list()
-        if 0 <= target_row < len(data):
-            data.pop(target_row)
+        if 0 <= row < len(data):
+            data.pop(row)
         self._render_table_from_data(data)
 
     def _active_cache_list(self) -> list:
@@ -2216,12 +2221,20 @@ class MainWindow(QMainWindow):
             fix_item = QTableWidgetItem(item.get("suggestion", ""))
             self.typo_table.setItem(row_idx, 2, fix_item)
 
-            # 列3：忽略按钮
-            ignore_btn = QPushButton("忽略")
-            ignore_btn.setObjectName("smallBtn")
-            ignore_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-            ignore_btn.clicked.connect(self._on_check_ignore_row)
-            self.typo_table.setCellWidget(row_idx, 3, ignore_btn)
+            # 列3：忽略 —— 普通文字单元格（点击由 cellClicked 捕获）
+            ig_item = QTableWidgetItem("忽略")
+            ig_item.setFlags(
+                Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable
+            )
+            ig_item.setTextAlignment(
+                Qt.AlignmentFlag.AlignCenter | Qt.AlignmentFlag.AlignVCenter
+            )
+            ig_item.setForeground(QColor("#00897b"))
+            ig_font = QFont()
+            ig_font.setBold(True)
+            ig_item.setFont(ig_font)
+            ig_item.setToolTip("点击忽略此条")
+            self.typo_table.setItem(row_idx, 3, ig_item)
 
         # 计数标签 + 应用按钮启用状态
         kind_text = "错别字" if self._current_check_kind == "typo" else "重复字词"
@@ -2461,12 +2474,20 @@ class MainWindow(QMainWindow):
             msg_item.setFlags(msg_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
             self.claim_result_table.setItem(row_idx, 3, msg_item)
 
-            # 操作列：忽略（按本条 context 里的关键词）
-            btn = QPushButton("忽略")
-            btn.setObjectName("smallBtn")
-            btn.setCursor(Qt.CursorShape.PointingHandCursor)
-            btn.clicked.connect(lambda _=False, r=row_idx: self._on_claim_ignore_row(r))
-            self.claim_result_table.setCellWidget(row_idx, 4, btn)
+            # 操作列：忽略 —— 普通文字单元格（点击由 cellClicked 捕获）
+            ig_item = QTableWidgetItem("忽略")
+            ig_item.setFlags(
+                Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable
+            )
+            ig_item.setTextAlignment(
+                Qt.AlignmentFlag.AlignCenter | Qt.AlignmentFlag.AlignVCenter
+            )
+            ig_item.setForeground(QColor("#00897b"))
+            ig_font = QFont()
+            ig_font.setBold(True)
+            ig_item.setFont(ig_font)
+            ig_item.setToolTip("点击忽略此条")
+            self.claim_result_table.setItem(row_idx, 4, ig_item)
 
     def _show_claim_result_detail(self, row: int):
         """弹出只读对话框显示指定结果行的完整字段（避免 elide 截断）。"""
@@ -2610,6 +2631,11 @@ class MainWindow(QMainWindow):
         self.claim_preview_edit.setTextCursor(cursor)
         self.claim_preview_edit.centerCursor()
         self.claim_preview_edit.setFocus()
+
+    def _on_claim_cell_clicked(self, row: int, col: int):
+        """单击单元格 → 若是「忽略」列则触发忽略，其它列交给双击处理。"""
+        if col == 4:
+            self._on_claim_ignore_row(row)
 
     def _on_claim_ignore_row(self, row: int):
         """

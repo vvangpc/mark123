@@ -163,30 +163,6 @@ QPushButton#smallBtn:hover {
     border-color: #00bfa5;
 }
 
-/* 表格行内「忽略」等操作按钮：无底无边，仅文字（深色主题）
-   尺寸完全由 Python 层 setFixedSize 决定，这里只给颜色/字体/边框/内边距，
-   不设置 min-width / min-height，避免与 QPushButton 全局规则冲突。 */
-QPushButton#rowActionBtn {
-    padding: 0 6px;
-    margin: 0;
-    font-size: 13px;
-    font-weight: 600;
-    color: #00e5c7;
-    background-color: transparent;
-    border: none;
-    text-align: center;
-}
-
-QPushButton#rowActionBtn:hover {
-    color: #ffffff;
-    background-color: transparent;
-}
-
-QPushButton#rowActionBtn:pressed {
-    color: #00bfa5;
-    background-color: transparent;
-}
-
 QPushButton#dangerBtn {
     background-color: rgba(255, 82, 82, 0.15);
     border: 1px solid rgba(255, 82, 82, 0.3);
@@ -622,30 +598,6 @@ QPushButton#smallBtn {
 QPushButton#smallBtn:hover {
     background-color: #e0f2f1;
     border-color: #00bfa5;
-}
-
-/* 表格行内「忽略」等操作按钮：无底无边，仅文字（亮色主题）
-   尺寸完全由 Python 层 setFixedSize 决定，这里只给颜色/字体/边框/内边距，
-   不设置 min-width / min-height，避免与 QPushButton 全局规则冲突。 */
-QPushButton#rowActionBtn {
-    padding: 0 6px;
-    margin: 0;
-    font-size: 13px;
-    font-weight: 600;
-    color: #00897b;
-    background-color: transparent;
-    border: none;
-    text-align: center;
-}
-
-QPushButton#rowActionBtn:hover {
-    color: #00695c;
-    background-color: transparent;
-}
-
-QPushButton#rowActionBtn:pressed {
-    color: #004d40;
-    background-color: transparent;
 }
 
 QPushButton#dangerBtn {

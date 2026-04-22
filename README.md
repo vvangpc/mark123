@@ -312,15 +312,9 @@ C:\Users\<用户名>\AppData\Local\PatentMarker\MarkAssistant\
 ```
 mark123/
 ├── main.py                    # 程序入口
-├── main_window.py             # 主窗口壳：菜单栏 / 头部 / 历史面板 / 跨 Tab 协调
+├── main_window.py             # 主窗口：四大 Tab 构建、事件协调、历史面板
 ├── workers.py                 # 后台线程：AnnotateWorker / CleanWorker / ToastWidget
 ├── styles.py                  # 浅色 / 深色主题 QSS
-│
-├── tabs/                      # 四大 Tab 按模块拆分（Mixin 组合到 MainWindow）
-│   ├── mark_tab.py            # Tab 1：标记与标注 + 可编辑预览
-│   ├── clean_tab.py           # Tab 2：清洗与检测
-│   ├── typo_tab.py            # Tab 3：错别字 / 重复字词
-│   └── claim_tab.py           # Tab 4：权利要求书检查
 │
 ├── doc_parser.py              # docx 五书分段解析（权利要求书 / 说明书 / ...）
 ├── annotator.py               # XML 级安全标注引擎（核心：保留公式 / 图形）
