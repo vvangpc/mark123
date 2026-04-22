@@ -467,15 +467,16 @@ def check_antecedent_basis(claims: dict, n: int, ignore_set: set,
     # 动态模式下，术语长度可变；用更宽松的最大长度做候选
     DYN_MAX_LEN = DYN_TERM_MAX_LEN
 
-    def _collect_freeform_terms(text: str, suoshu_mask: list) -> set:
+    def _collect_freeform_terms(text: str, suoshu_mask: list) -> dict:
         """
         把文本拆成"连续 CJK 段"，对每段产生所有长度 2..DYN_MAX_LEN 的子串
         作为"已定义术语候选"。与 suoshu_mask 标记区间相交的子串视为引用，跳过。
+        返回 {子串: 首次出现位置} 的字典，用于做"前向引用"的位置比较。
 
         优化：用 next_suoshu[i] 表示"从 i 起首个被标记位置"做 O(1) 重叠判断，
         避免原实现里 any(pos in set for ...) 的 O(L_sub) 开销。
         """
-        out: set = set()
+        out: dict = {}
         L = len(text)
         # next_suoshu[i] = 从位置 i 起首个 mask=True 的下标（含 i），越界返回 L
         next_suoshu = [L] * (L + 1)
@@ -497,28 +498,40 @@ def check_antecedent_basis(claims: dict, n: int, ignore_set: set,
                     # 子串 [k, k+L_sub) 与 suoshu_mask 有交集 ⇔ next_suoshu[k] < k+L_sub
                     if next_suoshu[k] < k + L_sub:
                         continue
-                    out.add(text[k:k + L_sub])
+                    sub = text[k:k + L_sub]
+                    prev = out.get(sub)
+                    if prev is None or k < prev:
+                        out[sub] = k
             i = j
         return out
 
-    # 先给每个权项建立"已定义的 n 字术语集合"（不包含所述前缀）
-    # 遍历时，按权项从小到大，继承该权项所依赖的权项的定义集
-    defined_by_claim: dict = {}
-    defined_free_by_claim: dict = {}  # 动态模式下使用
+    # 先给每个权项建立"已定义的 n 字术语 → 首次位置"的映射
+    # 遍历时，按权项从小到大，继承该权项所依赖的权项的定义（继承项位置视为 -1）
+    defined_pos_by_claim: dict = {}       # {claim_no: {term: first_pos}}
+    defined_free_pos_by_claim: dict = {}  # 动态模式下使用
     for no in sorted(claims.keys()):
         info = claims[no]
-        # 起始集合 = 所有被其引用的前序权项的 defined 集合的并集
-        base: set = set()
-        base_free: set = set()
+        # 起始字典 = 所有被其引用的前序权项的 defined 集合的并，位置统一记 -1
+        # -1 意味着"继承而来，早于当前权项内的任何引用位置"
+        cur_defined_pos: dict = {}
+        cur_defined_free_pos: dict = {}
         for cited in info.cites:
-            if cited in defined_by_claim:
-                base |= defined_by_claim[cited]
-            if cited in defined_free_by_claim:
-                base_free |= defined_free_by_claim[cited]
+            for t in defined_pos_by_claim.get(cited, {}):
+                cur_defined_pos.setdefault(t, -1)
+            for t in defined_free_pos_by_claim.get(cited, {}):
+                cur_defined_free_pos.setdefault(t, -1)
         # 遍历文本，识别"非所述的 n 字 CJK 子串"作为首次定义
         text = info.text
-        cur_defined = set(base)
-        cur_defined_free = set(base_free)
+
+        def _defined_before(term: str, pos: int) -> bool:
+            """判断 term 是否在位置 pos 之前被定义过（继承项视为 -1）。"""
+            dp = cur_defined_pos.get(term)
+            if dp is not None and dp < pos:
+                return True
+            dp = cur_defined_free_pos.get(term)
+            if dp is not None and dp < pos:
+                return True
+            return False
         # 过滤掉"权利要求N所述"中的"所述"（属于引用语公式，不是反向引用）
         suoshu_positions = [
             m.start() for m in _SUOSHU_RE.finditer(text)
@@ -532,7 +545,7 @@ def check_antecedent_basis(claims: dict, n: int, ignore_set: set,
         #     例：「所述垂直延伸板段的端部设有挂钩（10），所述挂钩…」
         #         如果窗口是固定 12 字，会把"挂"扣掉，导致"挂钩"收不进定义集；
         #         用截断逻辑算出真实长度 7（停在"端部"），"挂钩"就能正常入集。
-        # 优化：trunc_term 每个位置最多算一次，复用在 suoshu_span 构造 + 主校验
+        # 优化：trunc_term 每个位置最多算一次，复用在 suoshu_mask 构造 + 主校验
         text_len = len(text)
         trunc_term_cache: dict = {}
         suoshu_mask = [False] * text_len
@@ -561,10 +574,15 @@ def check_antecedent_basis(claims: dict, n: int, ignore_set: set,
             # 如果该子串位于"所述 + seg"的窗口内 → 视为引用，不当作首次定义
             if next_suoshu[idx] < idx + n:
                 continue
-            cur_defined.add(seg)
-        # 动态模式：额外收集变长子串作为"自由形式"定义集
+            # 只记录首次（最早）出现位置，用于后续"前向引用"比较
+            if seg not in cur_defined_pos or idx < cur_defined_pos[seg]:
+                cur_defined_pos[seg] = idx
+        # 动态模式：额外收集变长子串作为"自由形式"定义集（{子串: 首次位置}）
         if dyn_mode:
-            cur_defined_free |= _collect_freeform_terms(text, suoshu_mask)
+            for t, pos in _collect_freeform_terms(text, suoshu_mask).items():
+                prev = cur_defined_free_pos.get(t)
+                if prev is None or pos < prev:
+                    cur_defined_free_pos[t] = pos
 
         # ── 提取每个 "所述" 后的术语并校验 ──
         for p in suoshu_positions:
@@ -590,7 +608,7 @@ def check_antecedent_basis(claims: dict, n: int, ignore_set: set,
                     continue
                 if n_term in ignore_set or _is_noisy_ngram(n_term):
                     continue
-                if n_term in cur_defined:
+                if _defined_before(n_term, p):
                     continue
                 missing_term = n_term
                 ctx_term_len = n
@@ -600,7 +618,7 @@ def check_antecedent_basis(claims: dict, n: int, ignore_set: set,
                     continue
                 if trunc_term in ignore_set or _is_noisy_ngram(trunc_term):
                     continue
-                if (trunc_term in cur_defined_free) or (trunc_term in cur_defined):
+                if _defined_before(trunc_term, p):
                     continue
                 missing_term = trunc_term
                 ctx_term_len = len(trunc_term)
@@ -616,7 +634,7 @@ def check_antecedent_basis(claims: dict, n: int, ignore_set: set,
                     if sub in ignore_set:
                         hit = True
                         break
-                    if (sub in cur_defined) or (sub in cur_defined_free):
+                    if _defined_before(sub, p):
                         hit = True
                         break
                 if hit:
@@ -640,16 +658,14 @@ def check_antecedent_basis(claims: dict, n: int, ignore_set: set,
                     if sub in ignore_set:
                         hit = True
                         break
-                    if (sub in cur_defined) or (sub in cur_defined_free):
+                    if _defined_before(sub, p):
                         hit = True
                         break
                 if hit:
                     continue
                 # 还要再多一道兜底：base_term 的最末字往往是边界字，
                 # 单独再用 n_term（n 字定值）兜一遍可避免漏放过同义噪声
-                if n_term and (
-                    n_term in cur_defined or n_term in cur_defined_free
-                ):
+                if n_term and _defined_before(n_term, p):
                     continue
                 missing_term = base_term
                 ctx_term_len = len(base_term)
@@ -666,8 +682,8 @@ def check_antecedent_basis(claims: dict, n: int, ignore_set: set,
                 "suggestion": "",
             })
         # 写回
-        defined_by_claim[no] = cur_defined
-        defined_free_by_claim[no] = cur_defined_free
+        defined_pos_by_claim[no] = cur_defined_pos
+        defined_free_pos_by_claim[no] = cur_defined_free_pos
     return results
 
 
