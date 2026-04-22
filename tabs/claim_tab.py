@@ -467,8 +467,11 @@ class ClaimTabMixin:
             btn = QPushButton("忽略")
             btn.setObjectName("rowActionBtn")
             btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            btn.setMinimumHeight(28)
             btn.clicked.connect(lambda _=False, r=row_idx: self._on_claim_ignore_row(r))
             self.claim_result_table.setCellWidget(row_idx, 4, btn)
+            # 显式给当前行一个下限行高，避免 Qt 以 item 的 sizeHint 压缩行高
+            self.claim_result_table.setRowHeight(row_idx, 32)
 
     def _show_claim_result_detail(self, row: int):
         """弹出只读对话框显示指定结果行的完整字段（避免 elide 截断）。"""

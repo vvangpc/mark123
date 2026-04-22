@@ -513,8 +513,11 @@ class TypoTabMixin:
             ignore_btn = QPushButton("忽略")
             ignore_btn.setObjectName("rowActionBtn")
             ignore_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            ignore_btn.setMinimumHeight(28)
             ignore_btn.clicked.connect(self._on_check_ignore_row)
             self.typo_table.setCellWidget(row_idx, 3, ignore_btn)
+            # 显式给当前行一个下限行高，避免 Qt 以 item 的 sizeHint 压缩行高
+            self.typo_table.setRowHeight(row_idx, 32)
 
         # 计数标签 + 应用按钮启用状态
         kind_text = "错别字" if self._current_check_kind == "typo" else "重复字词"
