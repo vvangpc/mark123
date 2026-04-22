@@ -19,6 +19,24 @@ from PyQt6.QtGui import QTextCursor, QTextCharFormat, QColor
 from workers import _longest_nonspace_run
 
 
+# 行内「忽略」按钮的 widget 级样式 — 直接挂到按钮上，绕过 app-wide
+# QPushButton { padding: 12px 24px } 对文字的垂直压缩。
+_ROW_ACTION_BTN_INLINE = (
+    "QPushButton {"
+    " padding: 0 6px;"
+    " margin: 0;"
+    " border: none;"
+    " background: transparent;"
+    " color: #00897b;"
+    " font-size: 13px;"
+    " font-weight: 600;"
+    " text-align: center;"
+    "}"
+    "QPushButton:hover { color: #00695c; }"
+    "QPushButton:pressed { color: #004d40; }"
+)
+
+
 class ClaimTabMixin:
     """权利要求书检查 Tab 的方法集合，供 MainWindow 继承。"""
 
@@ -463,9 +481,10 @@ class ClaimTabMixin:
             msg_item.setFlags(msg_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
             self.claim_result_table.setItem(row_idx, 3, msg_item)
 
-            # 操作列：忽略 — 使用 setFixedSize 强制尺寸，绕开 QSS 级联压缩
+            # 操作列：忽略 — setFixedSize 定外框 + 对象内联 QSS 重置 padding
             btn = QPushButton("忽略")
             btn.setObjectName("rowActionBtn")
+            btn.setStyleSheet(_ROW_ACTION_BTN_INLINE)
             btn.setCursor(Qt.CursorShape.PointingHandCursor)
             btn.setFixedSize(68, 28)
             btn.clicked.connect(lambda _=False, r=row_idx: self._on_claim_ignore_row(r))
