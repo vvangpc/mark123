@@ -9,11 +9,10 @@ import os
 os.environ["QT_ENABLE_HIGHDPI_SCALING"] = "1"
 
 from PyQt6.QtWidgets import QApplication
-from PyQt6.QtGui import QIcon, QFont
-from PyQt6.QtCore import Qt
+from PyQt6.QtGui import QFont
 
 from main_window import MainWindow
-from styles import DARK_THEME_QSS, LIGHT_THEME_QSS
+from styles import LIGHT_THEME_QSS
 
 
 def main():

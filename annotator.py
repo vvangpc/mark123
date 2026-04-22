@@ -5,7 +5,6 @@ annotator.py — 格式安全标注引擎
 确保完整保留所有对象（如 MathType/AXmath 公式节点、图形等）以及 run 级别的格式。
 """
 import re
-from docx.oxml.ns import qn
 
 
 def _build_xml_char_map(paragraph):

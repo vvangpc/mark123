@@ -336,7 +336,6 @@ mark123/
 ├── make_ico.py                # app_icon.png → .ico 多尺寸生成
 ├── app_icon.png / app_icon.ico
 ├── test_smoke.py              # 最小冒烟测试：起窗口 + 载入样例 docx
-├── test_engine.py / test_parser.py # 引擎层单测
 └── pyproject.toml / uv.lock   # 依赖
 ```
 

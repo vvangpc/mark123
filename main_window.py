@@ -11,7 +11,7 @@ from PyQt6.QtWidgets import (
     QStatusBar, QProgressBar, QFrame, QSplitter, QTabWidget,
     QGroupBox, QApplication, QCheckBox, QDialog, QSpinBox,
     QButtonGroup, QTableWidget, QTableWidgetItem, QHeaderView,
-    QScrollArea, QAbstractItemView, QLineEdit,
+    QLineEdit,
 )
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QThread
 from PyQt6.QtGui import (
@@ -20,11 +20,7 @@ from PyQt6.QtGui import (
 
 from doc_parser import parse_document, get_section_text
 from mark_extractor import extract_marks_from_paragraph, extract_marks_from_paragraphs, marks_to_display_text, parse_marks_from_display_text
-from annotator import (
-    smart_annotate_section, build_claims_replace_dict,
-    build_implementation_replace_dict, annotate_section,
-    smart_remove_section, annotate_paragraph_safe
-)
+from annotator import smart_annotate_section, smart_remove_section
 from styles import DARK_THEME_QSS, LIGHT_THEME_QSS
 from cleaner import (
     remove_suoshu, unify_halfwidth_punct, convert_fullwidth_to_halfwidth,
