@@ -41,6 +41,14 @@ def main():
             QTimer.singleShot(500, lambda: window._load_document(file_path))
 
     window.show()
+
+    # 若由 PyInstaller 打包并启用了 splash，窗口显示后立即关闭启动图
+    try:
+        import pyi_splash  # type: ignore  # 仅在 PyInstaller 打包产物中存在
+        pyi_splash.close()
+    except ImportError:
+        pass
+
     sys.exit(app.exec())
 
 
