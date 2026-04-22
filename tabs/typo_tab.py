@@ -18,6 +18,25 @@ from PyQt6.QtCore import Qt
 from workers import _is_pycorrector_available
 
 
+# 行内「忽略」按钮的 widget 级样式：
+#   直接挂到按钮上 → Qt 样式表级联中"对象内联 QSS"优先级高于
+#   app-wide QSS，可绕过全局 QPushButton { padding: 12px 24px } 对文字的压缩。
+_ROW_ACTION_BTN_INLINE = (
+    "QPushButton {"
+    " padding: 0 6px;"
+    " margin: 0;"
+    " border: none;"
+    " background: transparent;"
+    " color: #00897b;"
+    " font-size: 13px;"
+    " font-weight: 600;"
+    " text-align: center;"
+    "}"
+    "QPushButton:hover { color: #00695c; }"
+    "QPushButton:pressed { color: #004d40; }"
+)
+
+
 class TypoTabMixin:
     """错字 / 重复字词检查 Tab 的方法集合，供 MainWindow 继承。"""
 
@@ -509,9 +528,10 @@ class TypoTabMixin:
             fix_item = QTableWidgetItem(item.get("suggestion", ""))
             self.typo_table.setItem(row_idx, 2, fix_item)
 
-            # 列3：忽略按钮 — 使用 setFixedSize 强制尺寸，绕开 QSS 级联压缩
+            # 列3：忽略按钮 — setFixedSize 定外框 + 对象内联 QSS 重置 padding
             ignore_btn = QPushButton("忽略")
             ignore_btn.setObjectName("rowActionBtn")
+            ignore_btn.setStyleSheet(_ROW_ACTION_BTN_INLINE)
             ignore_btn.setCursor(Qt.CursorShape.PointingHandCursor)
             ignore_btn.setFixedSize(68, 28)
             ignore_btn.clicked.connect(self._on_check_ignore_row)
