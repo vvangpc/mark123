@@ -116,6 +116,9 @@ class TypoTabMixin:
         self.typo_table.setColumnWidth(3, 76)
         self.typo_table.setAlternatingRowColors(True)
         self.typo_table.verticalHeader().setVisible(False)
+        # 行高下限 32px，避免"忽略"等按钮文字在压缩行高下被裁剪
+        self.typo_table.verticalHeader().setDefaultSectionSize(32)
+        self.typo_table.verticalHeader().setMinimumSectionSize(32)
         action_v.addWidget(self.typo_table, 1)
 
         layout.addWidget(action_group, 1)

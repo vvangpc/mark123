@@ -253,6 +253,9 @@ class ClaimTabMixin:
         h.setStretchLastSection(False)
         self.claim_result_table.setAlternatingRowColors(True)
         self.claim_result_table.verticalHeader().setVisible(False)
+        # 行高下限 32px，避免"忽略"等按钮文字在压缩行高下被裁剪
+        self.claim_result_table.verticalHeader().setDefaultSectionSize(32)
+        self.claim_result_table.verticalHeader().setMinimumSectionSize(32)
         # 双击「上下文」格（列 2） → 跳转并高亮左侧预览框对应位置
         self.claim_result_table.cellDoubleClicked.connect(
             self._on_claim_result_double_clicked

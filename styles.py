@@ -165,11 +165,12 @@ QPushButton#smallBtn:hover {
 
 /* 表格行内「忽略」等操作按钮：无底无边，仅文字；字号与行内其它文字一致（亮色主题） */
 QPushButton#rowActionBtn {
-    padding: 0;
+    padding: 4px 8px;
     margin: 0;
     font-size: 13px;
     font-weight: 600;
     min-width: 56px;
+    min-height: 22px;
     color: #00e5c7;
     background-color: transparent;
     border: none;
@@ -625,11 +626,12 @@ QPushButton#smallBtn:hover {
 
 /* 表格行内「忽略」等操作按钮：无底无边，仅文字（文字即按钮） */
 QPushButton#rowActionBtn {
-    padding: 0;
+    padding: 4px 8px;
     margin: 0;
     font-size: 13px;
     font-weight: 600;
     min-width: 56px;
+    min-height: 22px;
     color: #00897b;
     background-color: transparent;
     border: none;
