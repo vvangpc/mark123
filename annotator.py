@@ -143,9 +143,15 @@ def build_claims_remove_dict(marks: dict[int, str]) -> dict[str, str]:
     return remove_dict
 
 def build_implementation_remove_dict(marks: dict[int, str]) -> dict[str, str]:
-    """具体实施方式清洗：齿圈1 → 齿圈"""
+    """具体实施方式清洗：齿圈1 / 齿圈（1） / 齿圈(1) → 齿圈
+
+    标准写法是「齿圈1」，但部分申请文件会误用权利要求书风格的「齿圈（1）」/「齿圈(1)」，
+    一并处理，避免漏删。
+    """
     remove_dict = {}
     for num, name in marks.items():
+        remove_dict[f"{name}（{num}）"] = name
+        remove_dict[f"{name}({num})"] = name
         remove_dict[f"{name}{num}"] = name
     return remove_dict
 

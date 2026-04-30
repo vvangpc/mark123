@@ -10,9 +10,19 @@ os.environ["QT_ENABLE_HIGHDPI_SCALING"] = "1"
 
 from PyQt6.QtWidgets import QApplication
 from PyQt6.QtGui import QFont
+from PyQt6.QtCore import QTimer
 
 from main_window import MainWindow
 from styles import LIGHT_THEME_QSS
+
+
+def _close_pyi_splash():
+    """关闭 PyInstaller 启动画面（仅在打包产物中可用）"""
+    try:
+        import pyi_splash  # type: ignore
+        pyi_splash.close()
+    except ImportError:
+        pass
 
 
 def main():
@@ -37,17 +47,14 @@ def main():
         file_path = sys.argv[1]
         if os.path.isfile(file_path) and file_path.lower().endswith('.docx'):
             # 延迟加载，等窗口完全显示后再打开文件
-            from PyQt6.QtCore import QTimer
             QTimer.singleShot(500, lambda: window._load_document(file_path))
 
     window.show()
 
-    # 若由 PyInstaller 打包并启用了 splash，窗口显示后立即关闭启动图
-    try:
-        import pyi_splash  # type: ignore  # 仅在 PyInstaller 打包产物中存在
-        pyi_splash.close()
-    except ImportError:
-        pass
+    # 等主窗口首次绘制完成再关闭 splash —— singleShot(0) 会被排到首个 paint
+    # 事件之后执行，使 logo 显示时长恰好等于真实启动时间：启动越快 logo 越短，
+    # 且不会出现「splash 已消失但主窗口尚未绘制」的视觉空档。
+    QTimer.singleShot(0, _close_pyi_splash)
 
     sys.exit(app.exec())
 
