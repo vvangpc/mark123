@@ -7,7 +7,11 @@
 ;   4. 产物：dist\专利标记助手V3.5-安装版.exe
 
 #define MyAppName "专利标记助手"
-#define MyAppVersion "3.5"
+; MyAppVersion 支持 CI 用 `iscc /DMyAppVersion=3.6 installer.iss` 命令行覆盖；
+; 本地直接 iscc installer.iss 时走下面的默认值（应与 version.py 同步）
+#ifndef MyAppVersion
+  #define MyAppVersion "3.5"
+#endif
 #define MyAppPublisher "vvangpc"
 #define MyAppExeName "专利标记助手.exe"
 #define MyAppURL "https://github.com/vvangpc/mark123"
