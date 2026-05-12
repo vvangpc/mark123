@@ -86,10 +86,19 @@ jobs:
           $now = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
 
           # tag annotation 作为 release notes 的主体
+          # Windows runner 上 PowerShell 默认用 GBK/Win1252 读子进程 stdout，
+          # git 输出 UTF-8 会被解码错位。强制 UTF-8 读取避免中文乱码
           $tag = '${{ github.ref_name }}'
           $notes = ""
           if ('${{ github.event_name }}' -eq 'push') {
-            $notes = git for-each-ref "refs/tags/$tag" --format='%(contents)' 2>$null
+            $prevEnc = [Console]::OutputEncoding
+            [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new()
+            try {
+              $notes = git for-each-ref "refs/tags/$tag" --format='%(contents)' 2>$null
+              $notes = $notes.Trim()
+            } finally {
+              [Console]::OutputEncoding = $prevEnc
+            }
           }
           if (-not $notes) { $notes = "查看 https://github.com/${{ github.repository }}/releases/tag/v$ver" }
 
