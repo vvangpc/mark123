@@ -17,5 +17,7 @@ build/
 .DS_Store
 Thumbs.db
 
-# 测试样本（patent docx，仓库不托管）
-SE26Y*.docx
+# 专利样本 docx：仓库永远不托管真实客户案件
+# 之前的 SE26Y* 是 typo（实际案号常以 FE 开头），改为全量拦截 .docx
+# 如果将来确实需要 commit 某个示例 docx，用 git add -f 强制添加
+*.docx
