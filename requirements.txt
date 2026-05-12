@@ -5,3 +5,7 @@ PyQt6>=6.7
 python-docx>=1.1
 lxml>=5.0
 pyinstaller>=6.10
+# Pillow 只在打包时用：PyInstaller 用它把 1024x1024 的 app_icon.png 缩到 splash 限制 760x480
+# 通过 build.py 里的 --exclude-module PIL，运行时 exe 不带 Pillow，不影响体积
+Pillow>=10.0
+
