@@ -1,0 +1,12 @@
+{
+  "version": "3.6",
+  "url": "https://github.com/vvangpc/mark123/releases/download/v3.6/%e4%b8%93%e5%88%a9%e6%a0%87%e8%ae%b0%e5%8a%a9%e6%89%8bV3.6-%e5%ae%89%e8%a3%85%e7%89%88.exe",
+  "url_github": "https://github.com/vvangpc/mark123/releases/download/v3.6/%e4%b8%93%e5%88%a9%e6%a0%87%e8%ae%b0%e5%8a%a9%e6%89%8bV3.6-%e5%ae%89%e8%a3%85%e7%89%88.exe",
+  "sha256": "9af742e4dcd49ad311b5dbe10eb38d77ed7a20e3b224a2e427c52a3d3b8e5a96",
+  "size": 32538450,
+  "notes": [
+    "fix: 加 Pillow 到 requirements.txt，CI splash 缩图需要",
+    ""
+  ],
+  "released_at": "2026-05-12T12:32:03Z"
+}
