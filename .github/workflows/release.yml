@@ -93,13 +93,16 @@ jobs:
           }
           if (-not $notes) { $notes = "查看 https://github.com/${{ github.repository }}/releases/tag/v$ver" }
 
-          # 安装包 .exe 只放在 GitHub Releases —— GitHub Pages 不适合托管大文件
-          # （会让 gh-pages 分支膨胀到 GB 级）。所以 url 和 url_github 都指向 Releases。
+          # 双源分发：
+          #   url        → VPS IP 直连（HTTP，CN 速度快），由本 workflow 通过 SCP 推送
+          #   url_github → GitHub Releases（HTTPS，全球可达），VPS 不可达时兜底
+          # 即使 VPS HTTP 链路被中间人篡改，updater.py 会用 latest.json 里的 sha256 校验拦下
+          $vpsBase = "http://${{ secrets.VPS_HOST }}/mark123"
           $ghBase = "https://github.com/${{ github.repository }}/releases/download/v$ver"
 
           $latest = [ordered]@{
             version     = $ver
-            url         = "$ghBase/$exeNameUrl"
+            url         = "$vpsBase/$exeNameUrl"
             url_github  = "$ghBase/$exeNameUrl"
             sha256      = $sha
             size        = $size
@@ -123,44 +126,53 @@ jobs:
           generate_release_notes: true
           fail_on_unmatched_files: true
 
-      # ── 把 latest.json 发布到 gh-pages 分支，让自定义域名 zlzs.cc.cd 能访问 ──
-      - name: Prepare gh-pages publish directory
+      # ── 把 .exe 和 latest.json 通过 SCP 推送到 VPS ──
+      # 用 windows-latest 自带的 OpenSSH（PowerShell 直接调 scp），不依赖 Docker action
+      - name: Deploy to VPS via SCP
+        if: ${{ secrets.VPS_HOST != '' }}
         shell: pwsh
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
         run: |
-          $ver = '${{ steps.ver.outputs.version }}'
-          New-Item -ItemType Directory -Force -Path dist-pages | Out-Null
-          Copy-Item "dist\latest.json" -Destination "dist-pages\latest.json" -Force
+          $exePath = "${{ steps.meta.outputs.exe_path }}"
+          if (-not (Test-Path $exePath)) { throw "exe not found: $exePath" }
 
-          # CNAME 告诉 GitHub Pages 该分支绑定哪个自定义域名（必须在分支根目录，无换行）
-          Set-Content -Path "dist-pages\CNAME" -Value "zlzs.cc.cd" -NoNewline -Encoding ascii
+          # 写入私钥到临时文件
+          $keyFile = Join-Path $env:RUNNER_TEMP "vps_deploy_key"
+          Set-Content -Path $keyFile -Value $env:VPS_SSH_KEY -NoNewline -Encoding ascii
 
-          # 友好的首页，避免别人访问 https://zlzs.cc.cd 直接看到 404
-          $indexHtml = @"
-          <!DOCTYPE html>
-          <html lang="zh-CN"><head><meta charset="utf-8">
-          <title>专利标记助手 · 更新源</title>
-          <style>body{font-family:-apple-system,'Microsoft YaHei',sans-serif;max-width:640px;margin:60px auto;padding:0 24px;color:#333;line-height:1.6}h1{font-size:22px}code{background:#f5f5f5;padding:2px 6px;border-radius:3px}a{color:#0366d6}</style>
-          </head><body>
-          <h1>专利标记助手 · 自动更新源</h1>
-          <p>这是软件用来获取最新版本信息的接口，不是给人看的页面。</p>
-          <p>最新版本元数据：<a href="/latest.json">/latest.json</a></p>
-          <p>当前版本：<code>v$ver</code></p>
-          <p>GitHub 仓库：<a href="https://github.com/${{ github.repository }}">${{ github.repository }}</a></p>
-          <p>下载安装包请到 <a href="https://github.com/${{ github.repository }}/releases/latest">Releases 页面</a>。</p>
-          </body></html>
-          "@
-          Set-Content -Path "dist-pages\index.html" -Value $indexHtml -Encoding utf8
+          # Windows OpenSSH 要求私钥文件权限只对当前用户开放
+          icacls $keyFile /inheritance:r | Out-Null
+          icacls $keyFile /grant:r "$($env:USERNAME):R" | Out-Null
 
-      - name: Publish to gh-pages branch
-        uses: peaceiris/actions-gh-pages@v4
-        with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          publish_dir: ./dist-pages
-          publish_branch: gh-pages
-          keep_files: false   # 每次发版清空重写（CNAME + index.html + latest.json 都会重新生成）
-          commit_message: "Publish v${{ steps.ver.outputs.version }} update manifest"
-          user_name: "github-actions[bot]"
-          user_email: "41898282+github-actions[bot]@users.noreply.github.com"
+          # 用 ssh 先在 VPS 上确保目录存在（也顺带验证连通性）
+          $sshArgs = @(
+            "-i", $keyFile,
+            "-o", "StrictHostKeyChecking=no",
+            "-o", "UserKnownHostsFile=NUL",
+            "-o", "LogLevel=ERROR",
+            "$($env:VPS_USER)@$($env:VPS_HOST)",
+            "mkdir -p /var/www/mark123 && chmod 755 /var/www/mark123"
+          )
+          & ssh @sshArgs
+          if ($LASTEXITCODE -ne 0) { throw "ssh mkdir failed: $LASTEXITCODE" }
+
+          # 用 scp 上传 .exe 和 latest.json
+          $scpArgs = @(
+            "-i", $keyFile,
+            "-o", "StrictHostKeyChecking=no",
+            "-o", "UserKnownHostsFile=NUL",
+            "-o", "LogLevel=ERROR",
+            $exePath,
+            "dist/latest.json",
+            "$($env:VPS_USER)@$($env:VPS_HOST):/var/www/mark123/"
+          )
+          & scp @scpArgs
+          if ($LASTEXITCODE -ne 0) { throw "scp failed: $LASTEXITCODE" }
+
+          Write-Host "Deployed to http://$($env:VPS_HOST)/mark123/"
 
       - name: Upload build artifact (always)
         uses: actions/upload-artifact@v4

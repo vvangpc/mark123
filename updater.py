@@ -34,10 +34,12 @@ from PyQt6.QtCore import QObject, QSettings, Qt, pyqtSignal
 from PyQt6.QtWidgets import QMessageBox, QProgressDialog, QWidget, QApplication
 
 # ─────────────────────── 配置 ───────────────────────
-# 主源：自定义域名 → GitHub Pages（由 GitHub Actions 自动推送到 gh-pages 分支）
-PRIMARY_URL = "https://zlzs.cc.cd/latest.json"
+# 主源：VPS 直连 IP —— CN 用户访问速度比 GitHub 快得多
+# 用 HTTP 是因为 IP 没法签 Let's Encrypt 证书；安全性靠 latest.json 里的 sha256：
+# 即使 .exe 下载被中间人篡改，updater.py 会校验 hash 失败而拒绝安装
+PRIMARY_URL = "http://107.172.180.160/mark123/latest.json"
 
-# 备源：GitHub Releases 的 "latest" 别名 —— 主域名 DNS 没生效 / GitHub Pages 故障时兜底
+# 备源：GitHub Releases 的 "latest" 别名（HTTPS）—— VPS 挂了 / 中国封 IP 时兜底
 GITHUB_REPO = "vvangpc/mark123"
 FALLBACK_URL = f"https://github.com/{GITHUB_REPO}/releases/latest/download/latest.json"
 
