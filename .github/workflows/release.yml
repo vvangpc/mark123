@@ -97,7 +97,8 @@ jobs:
           #   url        → VPS IP 直连（HTTP，CN 速度快），由本 workflow 通过 SCP 推送
           #   url_github → GitHub Releases（HTTPS，全球可达），VPS 不可达时兜底
           # 即使 VPS HTTP 链路被中间人篡改，updater.py 会用 latest.json 里的 sha256 校验拦下
-          $vpsBase = "http://${{ secrets.VPS_HOST }}/mark123"
+          # 注：URL 不带 /mark123/ 前缀，nginx root 直接对应 /var/www/mark123
+          $vpsBase = "http://${{ secrets.VPS_HOST }}"
           $ghBase = "https://github.com/${{ github.repository }}/releases/download/v$ver"
 
           $latest = [ordered]@{

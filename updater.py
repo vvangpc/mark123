@@ -37,7 +37,8 @@ from PyQt6.QtWidgets import QMessageBox, QProgressDialog, QWidget, QApplication
 # 主源：VPS 直连 IP —— CN 用户访问速度比 GitHub 快得多
 # 用 HTTP 是因为 IP 没法签 Let's Encrypt 证书；安全性靠 latest.json 里的 sha256：
 # 即使 .exe 下载被中间人篡改，updater.py 会校验 hash 失败而拒绝安装
-PRIMARY_URL = "http://107.172.180.160/mark123/latest.json"
+# 注：URL 不带 /mark123/ 前缀，因为 nginx 的 root 已经设到 /var/www/mark123
+PRIMARY_URL = "http://107.172.180.160/latest.json"
 
 # 备源：GitHub Releases 的 "latest" 别名（HTTPS）—— VPS 挂了 / 中国封 IP 时兜底
 GITHUB_REPO = "vvangpc/mark123"
