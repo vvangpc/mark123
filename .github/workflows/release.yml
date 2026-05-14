@@ -1,0 +1,195 @@
+name: Release
+
+# 推 git tag v* 时触发；也支持去 Actions 页面手动按钮（调试用）
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: '版本号（不带 v 前缀，例如 3.6）'
+        required: true
+        type: string
+
+permissions:
+  contents: write   # 创建 Release / 上传 asset 需要
+
+jobs:
+  build-and-release:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # 拿到 tag annotation 内容用于 release notes
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+
+      - name: Resolve version
+        id: ver
+        shell: pwsh
+        run: |
+          if ('${{ github.event_name }}' -eq 'push') {
+            $ver = '${{ github.ref_name }}'.TrimStart('v')
+          } else {
+            $ver = '${{ inputs.version }}'
+          }
+          if (-not $ver) { throw "version is empty" }
+          Write-Host "Building version: $ver"
+          "version=$ver" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+
+          # 覆盖 version.py，让 main.py 和 updater.py 都用 CI 版本号
+          $content = @"
+          # -*- coding: utf-8 -*-
+          # 由 GitHub Actions 自动覆盖；本地开发请参考 version.py 原始内容
+          __version__ = "$ver"
+          "@
+          Set-Content -Path version.py -Value $content -Encoding utf8
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Build (PyInstaller onedir)
+        run: python build.py onedir
+
+      - name: Build installer (Inno Setup)
+        shell: pwsh
+        run: |
+          # Inno Setup 6 在 windows-latest 镜像中预装，iscc 通常已在 PATH
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) {
+            $iscc = (Get-Command iscc -ErrorAction SilentlyContinue).Source
+          }
+          if (-not $iscc) { throw "ISCC.exe not found — Inno Setup not installed on runner" }
+          & $iscc "/DMyAppVersion=${{ steps.ver.outputs.version }}" installer.iss
+          if ($LASTEXITCODE -ne 0) { throw "Inno Setup compile failed: $LASTEXITCODE" }
+
+      - name: Assemble latest.json
+        id: meta
+        shell: pwsh
+        run: |
+          Add-Type -AssemblyName System.Web
+          $ver = '${{ steps.ver.outputs.version }}'
+          $exePath = "dist\专利标记助手V$ver-安装版.exe"
+          if (-not (Test-Path $exePath)) { throw "Installer not found: $exePath" }
+
+          $exeName = Split-Path $exePath -Leaf
+          $exeNameUrl = [System.Web.HttpUtility]::UrlPathEncode($exeName)
+          $sha = (Get-FileHash $exePath -Algorithm SHA256).Hash.ToLower()
+          $size = (Get-Item $exePath).Length
+          $now = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
+
+          # tag annotation 作为 release notes 的主体
+          # Windows runner 上 PowerShell 默认用 GBK/Win1252 读子进程 stdout，
+          # git 输出 UTF-8 会被解码错位。强制 UTF-8 读取避免中文乱码
+          $tag = '${{ github.ref_name }}'
+          $notes = ""
+          if ('${{ github.event_name }}' -eq 'push') {
+            $prevEnc = [Console]::OutputEncoding
+            [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new()
+            try {
+              $notes = git for-each-ref "refs/tags/$tag" --format='%(contents)' 2>$null
+              $notes = $notes.Trim()
+            } finally {
+              [Console]::OutputEncoding = $prevEnc
+            }
+          }
+          if (-not $notes) { $notes = "查看 https://github.com/${{ github.repository }}/releases/tag/v$ver" }
+
+          # 双源分发：
+          #   url        → VPS IP 直连（HTTP，CN 速度快），由本 workflow 通过 SCP 推送
+          #   url_github → GitHub Releases（HTTPS，全球可达），VPS 不可达时兜底
+          # 即使 VPS HTTP 链路被中间人篡改，updater.py 会用 latest.json 里的 sha256 校验拦下
+          # 注：URL 不带 /mark123/ 前缀，nginx root 直接对应 /var/www/mark123
+          $vpsBase = "http://${{ secrets.VPS_HOST }}"
+          $ghBase = "https://github.com/${{ github.repository }}/releases/download/v$ver"
+
+          $latest = [ordered]@{
+            version     = $ver
+            url         = "$vpsBase/$exeNameUrl"
+            url_github  = "$ghBase/$exeNameUrl"
+            sha256      = $sha
+            size        = $size
+            notes       = $notes
+            released_at = $now
+          }
+          $latest | ConvertTo-Json -Depth 5 | Set-Content -Path "dist\latest.json" -Encoding utf8
+
+          Get-Content "dist\latest.json"
+          "exe_path=$exePath" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          "sha=$sha" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+
+      - name: Create GitHub Release
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          name: 专利标记助手 V${{ steps.ver.outputs.version }}
+          files: |
+            ${{ steps.meta.outputs.exe_path }}
+            dist/latest.json
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+
+      # ── 把 .exe 和 latest.json 通过 SCP 推送到 VPS ──
+      # 用 windows-latest 自带的 OpenSSH（PowerShell 直接调 scp），不依赖 Docker action
+      # 注：GitHub Actions 不允许 step 级 if: 直接读 secrets，且我们已经依赖 VPS 必须存在，
+      # 没配 secrets 这步会自然失败，不需要 if 条件
+      - name: Deploy to VPS via SCP
+        shell: pwsh
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+        run: |
+          $exePath = "${{ steps.meta.outputs.exe_path }}"
+          if (-not (Test-Path $exePath)) { throw "exe not found: $exePath" }
+
+          # 写入私钥到临时文件
+          $keyFile = Join-Path $env:RUNNER_TEMP "vps_deploy_key"
+          Set-Content -Path $keyFile -Value $env:VPS_SSH_KEY -NoNewline -Encoding ascii
+
+          # Windows OpenSSH 要求私钥文件权限只对当前用户开放
+          icacls $keyFile /inheritance:r | Out-Null
+          icacls $keyFile /grant:r "$($env:USERNAME):R" | Out-Null
+
+          # 用 ssh 先在 VPS 上确保目录存在（也顺带验证连通性）
+          $sshArgs = @(
+            "-i", $keyFile,
+            "-o", "StrictHostKeyChecking=no",
+            "-o", "UserKnownHostsFile=NUL",
+            "-o", "LogLevel=ERROR",
+            "$($env:VPS_USER)@$($env:VPS_HOST)",
+            "mkdir -p /var/www/mark123 && chmod 755 /var/www/mark123"
+          )
+          & ssh @sshArgs
+          if ($LASTEXITCODE -ne 0) { throw "ssh mkdir failed: $LASTEXITCODE" }
+
+          # 用 scp 上传 .exe 和 latest.json
+          $scpArgs = @(
+            "-i", $keyFile,
+            "-o", "StrictHostKeyChecking=no",
+            "-o", "UserKnownHostsFile=NUL",
+            "-o", "LogLevel=ERROR",
+            $exePath,
+            "dist/latest.json",
+            "$($env:VPS_USER)@$($env:VPS_HOST):/var/www/mark123/"
+          )
+          & scp @scpArgs
+          if ($LASTEXITCODE -ne 0) { throw "scp failed: $LASTEXITCODE" }
+
+          Write-Host "Deployed to http://$($env:VPS_HOST)/mark123/"
+
+      - name: Upload build artifact (always)
+        uses: actions/upload-artifact@v4
+        with:
+          name: installer-v${{ steps.ver.outputs.version }}
+          path: |
+            ${{ steps.meta.outputs.exe_path }}
+            dist/latest.json
+          retention-days: 30

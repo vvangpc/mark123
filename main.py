@@ -14,6 +14,7 @@ from PyQt6.QtCore import QTimer
 
 from main_window import MainWindow
 from styles import LIGHT_THEME_QSS
+from version import __version__
 
 
 def _close_pyi_splash():
@@ -31,6 +32,7 @@ def main():
     # 设置应用属性
     app.setApplicationName("专利标记助手")
     app.setApplicationDisplayName("专利标记助手")
+    app.setApplicationVersion(__version__)
 
     # 设置默认字体
     font = QFont("Microsoft YaHei UI", 10)
@@ -55,6 +57,13 @@ def main():
     # 事件之后执行，使 logo 显示时长恰好等于真实启动时间：启动越快 logo 越短，
     # 且不会出现「splash 已消失但主窗口尚未绘制」的视觉空档。
     QTimer.singleShot(0, _close_pyi_splash)
+
+    # 启动 1.5s 后后台检查更新；frozen 产物默认开，dev 模式默认关
+    # —— 句柄挂在 window 上避免被 gc，window 销毁时同步销毁
+    from updater import UpdateChecker, should_check
+    if should_check():
+        window._update_checker = UpdateChecker(window, __version__)
+        QTimer.singleShot(1500, window._update_checker.start)
 
     sys.exit(app.exec())
 
