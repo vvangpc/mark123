@@ -15,6 +15,7 @@ from PyQt6.QtCore import QTimer
 from main_window import MainWindow
 from styles import LIGHT_THEME_QSS
 from version import __version__
+from single_instance import try_send_to_running, install_listener
 
 
 def _close_pyi_splash():
@@ -41,17 +42,28 @@ def main():
     # 应用浅色主题样式作为默认
     app.setStyleSheet(LIGHT_THEME_QSS)
 
+    # 解析命令行带入的 docx 路径（若有）
+    incoming_file = ""
+    if len(sys.argv) > 1:
+        candidate = sys.argv[1]
+        if os.path.isfile(candidate) and candidate.lower().endswith('.docx'):
+            incoming_file = candidate
+
+    # 单实例：若已有实例在跑，把路径转交给它然后立刻退出
+    if incoming_file and try_send_to_running(incoming_file):
+        sys.exit(0)
+
     # 创建并显示主窗口
     window = MainWindow()
 
-    # 如果命令行传入了文件路径，直接打开
-    if len(sys.argv) > 1:
-        file_path = sys.argv[1]
-        if os.path.isfile(file_path) and file_path.lower().endswith('.docx'):
-            # 延迟加载，等窗口完全显示后再打开文件
-            QTimer.singleShot(500, lambda: window._load_document(file_path))
+    if incoming_file:
+        # 延迟加载，等窗口完全显示后再打开文件
+        QTimer.singleShot(500, lambda: window._load_document(incoming_file))
 
     window.show()
+
+    # 第一实例：挂上 IPC 监听，句柄挂在 window 上避免 GC
+    window._single_instance_server = install_listener(window)
 
     # 等主窗口首次绘制完成再关闭 splash —— singleShot(0) 会被排到首个 paint
     # 事件之后执行，使 logo 显示时长恰好等于真实启动时间：启动越快 logo 越短，

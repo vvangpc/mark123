@@ -1530,6 +1530,39 @@ class MainWindow(QMainWindow):
         finally:
             QTimer.singleShot(1500, lambda: self.progress_bar.setVisible(False))
 
+    # ─────────────── 单实例：接收远端转交的文件 ───────────────
+    def _receive_remote_file(self, file_path: str):
+        """另一个进程通过 QLocalSocket 转交过来的文件路径。
+        行为对齐拖入 / 点击：直接替换当前文件。"""
+        if not file_path or not os.path.isfile(file_path):
+            self._raise_to_front()
+            return
+        if not file_path.lower().endswith(".docx"):
+            self._raise_to_front()
+            return
+
+        # 后台 worker 正在跑时拒绝重新加载，避免半截改写 doc_data
+        busy = False
+        if getattr(self, "worker", None) is not None and self.worker.isRunning():
+            busy = True
+        if getattr(self, "clean_worker", None) is not None and self.clean_worker.isRunning():
+            busy = True
+        if busy:
+            self._raise_to_front()
+            self._show_toast("正在处理中，请稍候再切换文件", "info")
+            return
+
+        self._raise_to_front()
+        self._load_document(file_path)
+
+    def _raise_to_front(self):
+        """把窗口从最小化恢复并置顶激活"""
+        if self.isMinimized():
+            self.setWindowState(self.windowState() & ~Qt.WindowState.WindowMinimized)
+        self.show()
+        self.raise_()
+        self.activateWindow()
+
     def _extract_and_display_marks(self):
         """提取标记并显示在编辑框"""
         if not self.doc_data:
