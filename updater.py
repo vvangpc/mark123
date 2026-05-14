@@ -138,10 +138,17 @@ def _fetch_latest() -> Optional[UpdateInfo]:
 class UpdateChecker(QObject):
     """生命周期挂在主窗口上，避免 worker / thread 提前 gc 掉。"""
 
-    def __init__(self, parent_widget: QWidget, current_version: str):
+    def __init__(self, parent_widget: QWidget, current_version: str, manual: bool = False):
+        """
+        manual=True 表示用户从「设置 → 检查更新」主动触发：
+          - 无更新 / 检查失败 都需要给出可见反馈
+          - 忽略「跳过此版本」记录（用户主动检查时不应被屏蔽）
+        manual=False 是启动时的后台自动检查（原行为，全程静默）。
+        """
         super().__init__(parent_widget)
         self._parent_widget = parent_widget
         self._current = current_version
+        self._manual = manual
         self._worker: Optional[_CheckWorker] = None
         self._thread: Optional[threading.Thread] = None
 
@@ -161,20 +168,28 @@ class UpdateChecker(QObject):
 
     # ── 主线程槽 ──
     def _on_found(self, info: UpdateInfo) -> None:
-        # 用户曾点过「跳过此版本」？同版本静默
-        settings = QSettings(_ORG, _APP)
-        skipped = settings.value("updater/skip_version", "", type=str)
-        if skipped == info.version:
-            return
+        # 自动检查：用户曾点过「跳过此版本」？同版本静默
+        # 手动检查：忽略 skip_version，照常弹窗
+        if not self._manual:
+            settings = QSettings(_ORG, _APP)
+            skipped = settings.value("updater/skip_version", "", type=str)
+            if skipped == info.version:
+                return
         self._prompt(info)
 
     def _on_no_update(self) -> None:
-        # 静默，不打扰
-        pass
+        if self._manual:
+            QMessageBox.information(
+                self._parent_widget, "检查更新",
+                f"当前已是最新版本 V{self._current}",
+            )
 
     def _on_failed(self, _reason: str) -> None:
-        # 静默，不打扰；如需排障可改成 print
-        pass
+        if self._manual:
+            QMessageBox.warning(
+                self._parent_widget, "检查更新",
+                f"检查更新失败：{_reason or '网络异常'}",
+            )
 
     def _prompt(self, info: UpdateInfo) -> None:
         box = QMessageBox(self._parent_widget)

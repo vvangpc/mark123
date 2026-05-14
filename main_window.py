@@ -11,9 +11,9 @@ from PyQt6.QtWidgets import (
     QStatusBar, QProgressBar, QFrame, QSplitter, QTabWidget,
     QGroupBox, QApplication, QCheckBox, QDialog, QSpinBox,
     QButtonGroup, QTableWidget, QTableWidgetItem, QHeaderView,
-    QLineEdit,
+    QLineEdit, QMenu,
 )
-from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QThread
+from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QThread, QPoint
 from PyQt6.QtGui import (
     QDragEnterEvent, QDropEvent, QTextCursor, QTextCharFormat, QColor, QFont,
 )
@@ -359,7 +359,7 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
 
-        # 应用持久化的清洗 Tab 勾选状态
+        # 应用持久化的复选框勾选状态
         try:
             self.punct_halfwidth_cb.setChecked(
                 self.settings.get_bool("clean/punct_halfwidth", True)
@@ -369,6 +369,21 @@ class MainWindow(QMainWindow):
             )
             self.fix_punctuation_cb.setChecked(
                 self.settings.get_bool("clean/fix_consecutive_punct", True)
+            )
+            self.open_dir_cb.setChecked(
+                self.settings.get_bool("gen/open_dir", False)
+            )
+            self.claim_dyn_trunc_cb.setChecked(
+                self.settings.get_bool("claim/dyn_truncate", False)
+            )
+            self.claim_dyn_fb_cb.setChecked(
+                self.settings.get_bool("claim/dyn_fallback", False)
+            )
+            self.claim_vague_cb.setChecked(
+                self.settings.get_bool("claim/check_vague", True)
+            )
+            self.claim_term_cb.setChecked(
+                self.settings.get_bool("claim/check_term", False)
             )
         except Exception:
             pass
@@ -423,44 +438,42 @@ class MainWindow(QMainWindow):
         self.status_bar.addPermanentWidget(self.progress_bar)
 
     def _create_header(self) -> QFrame:
-        """创建顶部区域"""
+        """创建顶部区域
+
+        紧凑布局：单行 — [标题] [文件按钮(兼文件名提示)] <stretch> [⚙ 设置]
+        文件按钮在未加载文件时显示拖放提示，加载后显示当前文件名。
+        """
         header = QFrame()
         header.setObjectName("headerPanel")
         layout = QVBoxLayout(header)
-        layout.setSpacing(8)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(4)
 
-        # 标题行
         title_row = QHBoxLayout()
+        title_row.setSpacing(12)
+
         title_label = QLabel("专利标记助手")
         title_label.setObjectName("titleLabel")
         title_row.addWidget(title_label)
-        
-        # 主题切换按钮
-        self.theme_btn = QPushButton("🌓 切换主题")
-        self.theme_btn.setObjectName("smallBtn")
-        self.theme_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.theme_btn.clicked.connect(self._toggle_theme)
-        title_row.addWidget(self.theme_btn)
 
-        title_row.addStretch()
-
-        # 文件信息标签
-        self.file_info_label = QLabel("未打开文件")
-        self.file_info_label.setObjectName("subtitleLabel")
-        title_row.addWidget(self.file_info_label)
-        layout.addLayout(title_row)
-
-        # 副标题
-        subtitle = QLabel("直接操作 .docx 专利文件，自动提取附图标记并一键标注权利要求书和具体实施方式")
-        subtitle.setObjectName("subtitleLabel")
-        layout.addWidget(subtitle)
-
-        # 文件选择按钮
-        self.file_btn = QPushButton("📂  点击选择 docx 文件，或将文件拖入此区域")
+        # 文件选择按钮（紧凑，标题后；兼当前文件名提示）
+        self.file_btn = QPushButton("📂  拖入或点击选择 .docx 文件")
         self.file_btn.setObjectName("fileBtn")
         self.file_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.file_btn.clicked.connect(self._on_select_file)
-        layout.addWidget(self.file_btn)
+        self.file_btn.setMinimumWidth(280)
+        title_row.addWidget(self.file_btn, 1)
+
+        title_row.addStretch()
+
+        # 设置按钮（替代原「切换主题」单一按钮）
+        self.settings_btn = QPushButton("⚙ 设置")
+        self.settings_btn.setObjectName("smallBtn")
+        self.settings_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.settings_btn.clicked.connect(self._show_settings_menu)
+        title_row.addWidget(self.settings_btn)
+
+        layout.addLayout(title_row)
 
         return header
 
@@ -1454,10 +1467,10 @@ class MainWindow(QMainWindow):
             self.progress_bar.setValue(60)
             QApplication.processEvents()
 
-            # 更新文件信息
+            # 更新文件信息（按钮自身既是上传入口也是文件名提示）
             filename = os.path.basename(file_path)
-            self.file_info_label.setText(f"📄 {filename}")
-            self.file_btn.setText(f"📂  当前文件: {filename}   (点击更换)")
+            self.file_btn.setText(f"📄  {filename}")
+            self.file_btn.setToolTip(file_path)
 
             # 提取标记
             self._extract_and_display_marks()
@@ -1901,6 +1914,48 @@ class MainWindow(QMainWindow):
             pass
         self._show_toast(f"已切换为{'浅色' if self.current_theme == 'light' else '深色'}主题")
 
+    # ─────────────── 设置菜单 ───────────────
+    def _show_settings_menu(self):
+        """在设置按钮下方弹出菜单：切换主题 / 关于 / 检查更新"""
+        menu = QMenu(self)
+        act_theme = menu.addAction("🌓  切换主题")
+        act_about = menu.addAction("ℹ  关于")
+        act_update = menu.addAction("🔄  检查更新")
+
+        act_theme.triggered.connect(self._toggle_theme)
+        act_about.triggered.connect(self._show_about_dialog)
+        act_update.triggered.connect(self._on_check_updates_manual)
+
+        btn = self.settings_btn
+        menu.exec(btn.mapToGlobal(QPoint(0, btn.height())))
+
+    def _show_about_dialog(self):
+        """关于对话框"""
+        try:
+            from version import __version__
+        except Exception:
+            __version__ = "?"
+        QMessageBox.about(
+            self,
+            "关于 专利标记助手",
+            f"<b>专利标记助手</b> V{__version__}<br/><br/>"
+            "面向中国专利代理人的 .docx 辅助工具：<br/>"
+            "附图标记自动提取与标注 · 文本清洗 · 错别字检查 · 权利要求书检查。<br/><br/>"
+            "<span style='color:#888'>本地运行，不上传任何文件内容。</span>"
+        )
+
+    def _on_check_updates_manual(self):
+        """用户主动触发的更新检查（无更新/失败均给反馈）"""
+        try:
+            from updater import UpdateChecker
+            from version import __version__
+        except Exception as e:
+            QMessageBox.warning(self, "检查更新", f"无法加载更新模块：{e}")
+            return
+        # 句柄挂在 self 上避免被 GC
+        self._manual_update_checker = UpdateChecker(self, __version__, manual=True)
+        self._manual_update_checker.start()
+
     def closeEvent(self, event):
         """窗口关闭时持久化配置"""
         try:
@@ -1912,6 +1967,19 @@ class MainWindow(QMainWindow):
                 self.settings.set_bool("clean/punct_fullwidth", self.punct_fullwidth_cb.isChecked())
             if hasattr(self, "fix_punctuation_cb"):
                 self.settings.set_bool("clean/fix_consecutive_punct", self.fix_punctuation_cb.isChecked())
+            if hasattr(self, "open_dir_cb"):
+                self.settings.set_bool("gen/open_dir", self.open_dir_cb.isChecked())
+            if hasattr(self, "claim_dyn_trunc_cb"):
+                self.settings.set_bool("claim/dyn_truncate", self.claim_dyn_trunc_cb.isChecked())
+            if hasattr(self, "claim_dyn_fb_cb"):
+                self.settings.set_bool("claim/dyn_fallback", self.claim_dyn_fb_cb.isChecked())
+            if hasattr(self, "claim_vague_cb"):
+                self.settings.set_bool("claim/check_vague", self.claim_vague_cb.isChecked())
+            if hasattr(self, "claim_term_cb"):
+                self.settings.set_bool("claim/check_term", self.claim_term_cb.isChecked())
+            if hasattr(self, "suoshu_checkboxes"):
+                for _name, _cb in self.suoshu_checkboxes.items():
+                    self.settings.set_bool(f"clean/suoshu/{_name}", _cb.isChecked())
             self.settings.sync()
         except Exception:
             pass
@@ -1989,7 +2057,11 @@ class MainWindow(QMainWindow):
             if name not in sections:
                 continue
             cb = QCheckBox(name)
-            cb.setChecked(name in SUOSHU_DEFAULT_CHECKED)
+            try:
+                default = name in SUOSHU_DEFAULT_CHECKED
+                cb.setChecked(self.settings.get_bool(f"clean/suoshu/{name}", default))
+            except Exception:
+                cb.setChecked(name in SUOSHU_DEFAULT_CHECKED)
             self.suoshu_checkboxes[name] = cb
             self.suoshu_cb_layout.addWidget(cb)
             any_added = True
@@ -2447,6 +2519,7 @@ class MainWindow(QMainWindow):
             "vague":      "不确定用语",
             "numbering":  "序号",
             "multi_dep":  "多引合法性",
+            "ending":     "句号结尾",
         }
         self.claim_result_table.setRowCount(0)
         for row_idx, item in enumerate(results):
@@ -2497,6 +2570,7 @@ class MainWindow(QMainWindow):
             "vague": "不确定用语",
             "numbering": "独立权项序号",
             "multi_dep": "多项引用合法性",
+            "ending": "句号结尾",
         }
         kind_label = kind_map.get(item.get("kind"), item.get("kind") or "—")
         claim_no = item.get("claim_no")

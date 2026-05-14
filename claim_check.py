@@ -14,7 +14,7 @@ claim_check.py — 权利要求书引用检查
 每条结果格式：
     {
         "kind":        "antecedent" / "dependency" / "term" /
-                       "vague" / "numbering" / "multi_dep",
+                       "vague" / "numbering" / "multi_dep" / "ending",
         "claim_no":    int | None,
         "para_idx":    int  (全文中的段落索引),
         "context":     str  (原文片段),
@@ -780,6 +780,31 @@ def check_term_consistency(claims: dict, n: int, ignore_set: set) -> list:
 
 
 # ─────────────────────────────────────────
+# 句号结尾检查
+# ─────────────────────────────────────────
+def check_claim_ending_punctuation(claims: dict) -> list:
+    """每条权利要求必须以「。」结尾（中国专利撰写规范）"""
+    results = []
+    for no in sorted(claims.keys()):
+        info = claims[no]
+        stripped = (info.text or "").rstrip()
+        if not stripped:
+            continue
+        last = stripped[-1]
+        if last == "。":
+            continue
+        results.append({
+            "kind": "ending",
+            "claim_no": no,
+            "para_idx": info.para_indices[-1] if info.para_indices else -1,
+            "context": stripped[-20:],
+            "message": f"权利要求 {no} 未以「。」结尾（结尾字符：{last!r}）",
+            "suggestion": "在末尾补「。」",
+        })
+    return results
+
+
+# ─────────────────────────────────────────
 # 聚合入口
 # ─────────────────────────────────────────
 def run_all_checks(paragraphs, start_idx: int, end_idx: int,
@@ -811,6 +836,7 @@ def run_all_checks(paragraphs, start_idx: int, end_idx: int,
     results.extend(check_claim_dependency(claims))
     results.extend(check_multi_dependency(claims))
     results.extend(check_claim_numbering(claims))
+    results.extend(check_claim_ending_punctuation(claims))
     if check_vague:
         results.extend(check_vague_terms(claims, vague_words))
     results.extend(check_antecedent_basis(

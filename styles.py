@@ -135,12 +135,13 @@ QPushButton#accentBtn:hover {
 
 QPushButton#fileBtn {
     background-color: rgba(41, 98, 255, 0.15);
-    border: 2px dashed rgba(41, 98, 255, 0.4);
-    border-radius: 14px;
-    padding: 14px;
-    font-size: 15px;
+    border: 1px dashed rgba(41, 98, 255, 0.4);
+    border-radius: 8px;
+    padding: 4px 12px;
+    font-size: 12px;
     color: #90caf9;
-    min-height: 40px;
+    min-height: 22px;
+    text-align: left;
 }
 
 QPushButton#fileBtn:hover {
@@ -571,12 +572,13 @@ QPushButton#accentBtn:hover {
 
 QPushButton#fileBtn {
     background-color: rgba(41, 98, 255, 0.05);
-    border: 2px dashed rgba(41, 98, 255, 0.4);
-    border-radius: 14px;
-    padding: 14px;
-    font-size: 15px;
+    border: 1px dashed rgba(41, 98, 255, 0.4);
+    border-radius: 8px;
+    padding: 4px 12px;
+    font-size: 12px;
     color: #1976d2;
-    min-height: 40px;
+    min-height: 22px;
+    text-align: left;
 }
 
 QPushButton#fileBtn:hover {
