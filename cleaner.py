@@ -524,61 +524,9 @@ def check_duplicate_words(paragraphs, sections: dict = None,
     return results
 
 
-def check_typos_pycorrector(paragraphs, sections: dict = None) -> list:
-    """
-    使用 pycorrector 离线NLP库扫描（若未安装则返回空列表）。
-
-    返回格式与 check_typos_wordbank 相同。
-    """
-    try:
-        import pycorrector  # noqa: F401
-    except ImportError:
-        return []
-
-    import pycorrector as pc
-
-    results = []
-
-    if sections:
-        indices = set()
-        for sec in sections.values():
-            indices.update(range(sec.start_idx, sec.end_idx))
-        target = sorted(indices)
-    else:
-        target = range(len(paragraphs))
-
-    locate = _make_locator_with_paragraphs(sections or {}, paragraphs)
-
-    for i in target:
-        text = paragraphs[i].text.strip()
-        if not text or len(text) < 3:
-            continue
-        try:
-            corrected_text, details = pc.correct(text)
-        except Exception:
-            continue
-        for detail in details:
-            # detail 格式: (wrong_word, correct_word, start_pos, end_pos)
-            if len(detail) < 4:
-                continue
-            wrong, suggestion, pos_start, pos_end = detail[0], detail[1], detail[2], detail[3]
-            start = max(0, pos_start - 15)
-            end = min(len(text), pos_end + 15)
-            context = text[start:end]
-            results.append({
-                "para_idx": i,
-                "section": locate(i),
-                "context": context,
-                "wrong": wrong,
-                "suggestion": suggestion,
-                "kind": "pycorrector",
-            })
-    return results
-
-
 def merge_typo_results(*result_lists) -> list:
     """
-    合并多个来源（词库 / pycorrector / 重复词等）的结果，
+    合并多个来源（词库 / 重复词等）的结果，
     去除重复项（同一段落同一 wrong 词只保留一条）。
     """
     seen = set()

@@ -13,13 +13,12 @@ import sys
 
 def test_workers_import():
     from workers import (
-        _longest_nonspace_run, _is_pycorrector_available,
+        _longest_nonspace_run,
         AnnotateWorker, CleanWorker, ToastWidget,
     )
     assert _longest_nonspace_run("hello world") == "hello"
     assert _longest_nonspace_run("") == ""
     assert _longest_nonspace_run("  abc  defg  ") == "defg"
-    assert isinstance(_is_pycorrector_available(), bool)
     print("[OK] workers module imports & helpers work")
 
 

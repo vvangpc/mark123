@@ -393,12 +393,16 @@ def _is_in_citation_formula(text: str, suoshu_pos: int) -> bool:
 # ─────────────────────────────────────────
 def _extract_term_dynamic_truncate(text: str, start: int,
                                     blacklist_first_chars: set,
+                                    blacklist_words: set,
+                                    blacklist_lengths,
                                     max_len: int = 12) -> str:
     """
     从 text[start:] 起向后扫描 CJK 字符，直到遇到下列任一情况就停下：
       • 非 CJK 字符（标点、空格、英文、数字…）
       • 黑名单词的首字（即位置 k 起 text[k:k+L] 在黑名单里）
       • 累计达到 max_len（保护用，防止整段被吞）
+    blacklist_lengths 为当前黑名单实际出现的词长（降序）；按真实词长匹配，
+    使用户自定义的 1 字 / 5+ 字词条也能生效，为空时只按非 CJK 边界截断。
     返回累积到的术语字符串（可能为空）。
     """
     out = []
@@ -412,9 +416,9 @@ def _extract_term_dynamic_truncate(text: str, start: int,
         # 黑名单首字命中是必要条件，再做一次完整匹配以避免误伤
         if ch in blacklist_first_chars:
             hit = False
-            # 尝试匹配 2~4 字的黑名单词（黑名单词长度大多是 2，少数 3~4）
-            for L_word in (2, 3, 4):
-                if k + L_word <= L and text[k:k + L_word] in _BLACKLIST_WORDS_CACHE:
+            # 按黑名单实际出现的词长尝试完整匹配（长优先）
+            for L_word in blacklist_lengths:
+                if k + L_word <= L and text[k:k + L_word] in blacklist_words:
                     hit = True
                     break
             if hit:
@@ -424,15 +428,13 @@ def _extract_term_dynamic_truncate(text: str, start: int,
     return "".join(out)
 
 
-# 全局缓存：把当前调用使用的黑名单词集合放进去，加速 _extract_term_dynamic_truncate
-_BLACKLIST_WORDS_CACHE: set = set()
-
-
 def _build_blacklist_lookup(blacklist) -> tuple:
-    """从词列表构造 (首字 set, 完整词 set)"""
+    """从词列表构造 (首字 set, 完整词 set, 词长列表)。
+    词长列表按实际黑名单词长去重并降序排列，供截断时按真实长度匹配（长优先）。"""
     words = {w for w in (blacklist or ()) if w}
     first_chars = {w[0] for w in words if w}
-    return first_chars, words
+    lengths = sorted({len(w) for w in words}, reverse=True)
+    return first_chars, words, lengths
 
 
 # ─────────────────────────────────────────
@@ -460,9 +462,7 @@ def check_antecedent_basis(claims: dict, n: int, ignore_set: set,
     results = []
     ignore_set = set(ignore_set or ())
     # 准备黑名单查找表（即便没启用截断也无副作用）
-    bl_first_chars, bl_words = _build_blacklist_lookup(boundary_blacklist or [])
-    global _BLACKLIST_WORDS_CACHE
-    _BLACKLIST_WORDS_CACHE = bl_words
+    bl_first_chars, bl_words, bl_lengths = _build_blacklist_lookup(boundary_blacklist or [])
     dyn_mode = use_dynamic_truncate or use_dynamic_fallback
     # 动态模式下，术语长度可变；用更宽松的最大长度做候选
     DYN_MAX_LEN = DYN_TERM_MAX_LEN
@@ -552,7 +552,7 @@ def check_antecedent_basis(claims: dict, n: int, ignore_set: set,
         for p in suoshu_positions:
             if use_dynamic_truncate:
                 t = _extract_term_dynamic_truncate(
-                    text, p + 2, bl_first_chars, max_len=DYN_MAX_LEN
+                    text, p + 2, bl_first_chars, bl_words, bl_lengths, max_len=DYN_MAX_LEN
                 )
                 trunc_term_cache[p] = t
                 ref_len = len(t) if t else n

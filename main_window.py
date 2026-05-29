@@ -9,9 +9,9 @@ from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
     QLabel, QTextEdit, QPlainTextEdit, QFileDialog, QMessageBox,
     QStatusBar, QProgressBar, QFrame, QSplitter, QTabWidget,
-    QGroupBox, QApplication, QCheckBox, QDialog, QSpinBox,
+    QGroupBox, QApplication, QCheckBox, QDialog, QSpinBox, QAbstractSpinBox,
     QButtonGroup, QTableWidget, QTableWidgetItem, QHeaderView,
-    QLineEdit, QMenu,
+    QLineEdit, QMenu, QSizePolicy,
 )
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QThread, QPoint
 from PyQt6.QtGui import (
@@ -25,7 +25,7 @@ from styles import DARK_THEME_QSS, LIGHT_THEME_QSS
 from cleaner import (
     remove_suoshu, unify_halfwidth_punct, convert_fullwidth_to_halfwidth,
     detect_orphan_marks,
-    check_typos_wordbank, check_typos_pycorrector, check_duplicate_words,
+    check_typos_wordbank, check_duplicate_words,
     merge_typo_results, apply_typo_corrections
 )
 
@@ -56,15 +56,6 @@ def _longest_nonspace_run(s: str) -> str:
         if len(seg) > len(best):
             best = seg
     return best
-
-
-def _is_pycorrector_available() -> bool:
-    """检测 pycorrector 是否已安装"""
-    try:
-        import pycorrector  # noqa: F401
-        return True
-    except ImportError:
-        return False
 
 
 class AnnotateWorker(QThread):
@@ -230,10 +221,8 @@ class CleanWorker(QThread):
 
             elif self.action == "typo_check":
                 wb_results = check_typos_wordbank(paragraphs, sections)
-                self.progress.emit(50)
-                pc_results = check_typos_pycorrector(paragraphs, sections)
-                self.progress.emit(90)
-                merged = merge_typo_results(wb_results, pc_results)
+                self.progress.emit(80)
+                merged = merge_typo_results(wb_results)
                 self.progress.emit(100)
                 self.typo_results.emit(merged)
                 count = len(merged)
@@ -263,8 +252,10 @@ class ToastWidget(QLabel):
 
     def __init__(self, parent, message: str, toast_type: str = "info"):
         super().__init__(message, parent)
-        self.setFixedHeight(42)
+        self.setWordWrap(True)                 # 长文本/多行自动换行，避免被裁切遮挡
         self.setMinimumWidth(280)
+        self.setMaximumWidth(460)              # 过宽则换行，不撑出屏幕
+        self.setMinimumHeight(40)              # 单行时维持原观感
         self.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
 
         # 根据类型设置颜色
@@ -288,6 +279,12 @@ class ToastWidget(QLabel):
             }}
         """)
 
+        # 宽度按最长一行决定（夹在 280~460），再按该宽度自适应高度，
+        # 避免多行/长文本被固定高度裁切（用户反馈的「遮挡」问题）
+        fm = self.fontMetrics()
+        longest = max((fm.horizontalAdvance(ln) for ln in str(message).split("\n")), default=0)
+        self.setFixedWidth(min(max(longest + 56, 280), 460))
+        self.adjustSize()
         # 定位到右上角
         parent_width = parent.width() if parent else 800
         self.move(parent_width - self.width() - 30, 30)
@@ -818,8 +815,8 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(0, 8, 0, 0)
         layout.setSpacing(10)
 
-        # ── 顶部：引擎状态条（两个引擎同一行）─────────────
-        engine_group = QGroupBox("🧠 检查引擎状态")
+        # ── 顶部：词库条（错别字词库 + 重复字词忽略词库 同一行）──
+        engine_group = QGroupBox("📖 词库")
         engine_layout = QHBoxLayout(engine_group)
         engine_layout.setSpacing(20)
 
@@ -829,15 +826,12 @@ class MainWindow(QMainWindow):
         self.wb_label.setCursor(Qt.CursorShape.PointingHandCursor)
         self.wb_label.setToolTip("点击打开词库编辑器，可添加 / 修改 / 删除自定义词条")
         self.wb_label.setText(
-            f"✅  内置词库引擎  —  已加载 <b>{wb_count}</b> 条规则  "
+            f"✅  错别字词库  —  已加载 <b>{wb_count}</b> 条规则  "
             f"（<a href='#edit'>点击编辑词库</a>）"
         )
         self.wb_label.linkActivated.connect(lambda _: self._on_open_wordbank_dialog())
         self.wb_label.mousePressEvent = lambda e: self._on_open_wordbank_dialog()
         engine_layout.addWidget(self.wb_label)
-
-        # 注：「离线 NLP 引擎（pycorrector）」入口已隐藏到错别字词库编辑器内
-        # （专业用户三级菜单），主界面不再展示，避免给小白用户造成困扰。
 
         # 重复字词忽略词库入口
         self.dup_ignore_label = QLabel()
@@ -897,13 +891,22 @@ class MainWindow(QMainWindow):
         action_v.addLayout(btn_row)
 
         # 单一结果表格，两类检查共用
-        self.typo_table = QTableWidget(0, 4)
-        self.typo_table.setHorizontalHeaderLabels(["章节", "原文片段", "建议修改", "操作"])
-        self.typo_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
-        self.typo_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
-        self.typo_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
-        self.typo_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.Fixed)
-        self.typo_table.setColumnWidth(3, 72)
+        self.typo_table = QTableWidget(0, 5)
+        self.typo_table.setHorizontalHeaderLabels(["章节", "原文片段", "修改前", "修改后", "操作"])
+        _th = self.typo_table.horizontalHeader()
+        _th.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)  # 章节：自适应
+        # 原文片段 / 修改前 / 修改后 均为 Interactive，可独立拖拽列边框；
+        # 刻意不设中间 Stretch 列——否则拖某条分界线时 Stretch 列会吸收伸缩量，
+        # 表现为"拖修改前|修改后的线，动的却是原文片段|修改前的线"。
+        _th.setSectionResizeMode(1, QHeaderView.ResizeMode.Interactive)       # 原文片段
+        _th.setSectionResizeMode(2, QHeaderView.ResizeMode.Interactive)       # 修改前
+        _th.setSectionResizeMode(3, QHeaderView.ResizeMode.Interactive)       # 修改后
+        _th.setSectionResizeMode(4, QHeaderView.ResizeMode.Fixed)             # 操作：固定，吸附右侧
+        _th.setStretchLastSection(False)
+        self.typo_table.setColumnWidth(1, 320)
+        self.typo_table.setColumnWidth(2, 130)
+        self.typo_table.setColumnWidth(3, 130)
+        self.typo_table.setColumnWidth(4, 72)
         self.typo_table.setAlternatingRowColors(True)
         self.typo_table.verticalHeader().setVisible(False)
         # 行高给文字留足空间
@@ -936,6 +939,9 @@ class MainWindow(QMainWindow):
         # 检查字数选择栏：pill 式容器，左侧标签 + 6 个预设按钮 + 自定义框
         n_bar = QFrame()
         n_bar.setObjectName("claimNBar")
+        # Minimum 策略：窗口变窄时该容器不被压缩到内容宽度以下，
+        # 自定义数字框因此始终完整可见（必要时由右侧其它控件让位）。
+        n_bar.setSizePolicy(QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Preferred)
         n_bar_layout = QHBoxLayout(n_bar)
         n_bar_layout.setContentsMargins(10, 2, 10, 2)
         n_bar_layout.setSpacing(6)
@@ -963,6 +969,9 @@ class MainWindow(QMainWindow):
         n_bar_layout.addWidget(QLabel("自定义"))
         self.claim_n_custom = QSpinBox()
         self.claim_n_custom.setObjectName("nCustomSpin")
+        # 去掉上下箭头按钮，直接键入数字即可
+        self.claim_n_custom.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.NoButtons)
+        self.claim_n_custom.setMinimumWidth(56)  # 保底宽度，窗口变窄时数字不被压没
         self.claim_n_custom.setRange(2, 30)
         self.claim_n_custom.setValue(8)
         self.claim_n_custom.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -1185,7 +1194,7 @@ class MainWindow(QMainWindow):
             return
         wb_count = self._get_wordbank_count()
         self.wb_label.setText(
-            f"✅  内置词库引擎  —  已加载 <b>{wb_count}</b> 条规则  "
+            f"✅  错别字词库  —  已加载 <b>{wb_count}</b> 条规则  "
             f"（<a href='#edit'>点击编辑词库</a>）"
         )
 
@@ -1243,171 +1252,6 @@ class MainWindow(QMainWindow):
         self.dup_data = []
         if getattr(self, "_current_check_kind", None) == "dup":
             self._render_table_from_data([])
-
-    def _on_open_pycorrector_dialog(self):
-        """弹出 pycorrector 安装 / 模型 / 教程说明卡片"""
-        installed = _is_pycorrector_available()
-        dlg = QDialog(self)
-        dlg.setWindowTitle("离线 NLP 引擎 — pycorrector 说明")
-        dlg.setMinimumSize(640, 520)
-
-        v = QVBoxLayout(dlg)
-        v.setSpacing(10)
-
-        # 状态行
-        status = QLabel()
-        status.setTextFormat(Qt.TextFormat.RichText)
-        if installed:
-            status.setText("<b style='color:#00bfa5;'>✅ 当前状态：pycorrector 已安装</b>")
-        else:
-            status.setText("<b style='color:#ffab40;'>⚠️ 当前状态：pycorrector 未安装</b>")
-        v.addWidget(status)
-
-        # 教程区（可复制）
-        tutorial_label = QLabel("以下命令可直接复制到 PowerShell / CMD / 终端中执行：")
-        tutorial_label.setObjectName("subtitleLabel")
-        v.addWidget(tutorial_label)
-
-        tutorial_text = QPlainTextEdit()
-        tutorial_text.setReadOnly(False)  # 设置可编辑以便复制（不可保存）
-        tutorial_text.setPlainText(
-            "═══════════════════════════════════════════════════\n"
-            "  pycorrector 安装教程（零基础版 · 跟着做即可）\n"
-            "═══════════════════════════════════════════════════\n"
-            "\n"
-            "▎它是什么？\n"
-            "  pycorrector 是一个免费的中文错别字检测库。安装后本软件会用它做\n"
-            "  更深度的错别字检查。不安装也不影响基本使用，只是只能用内置词库。\n"
-            "\n"
-            "═══════════════════════════════════════════════════\n"
-            "  第 1 步：先确认电脑上有 Python\n"
-            "═══════════════════════════════════════════════════\n"
-            "\n"
-            "  ① 同时按下键盘的【Win 键】+ 【R 键】（Win 键就是 Ctrl 旁边那个\n"
-            "     带 Windows 标志的键）。\n"
-            "  ② 弹出「运行」小窗口，里面输入：\n"
-            "         cmd\n"
-            "     然后按【回车】。会出现一个黑底白字的窗口（叫「命令提示符」）。\n"
-            "  ③ 在黑窗口里把下面这行复制粘贴进去，按【回车】：\n"
-            "\n"
-            "         python --version\n"
-            "\n"
-            "  ④ 看返回结果：\n"
-            "     • 如果显示「Python 3.x.x」（比如 Python 3.11.5）→ 已安装，\n"
-            "       直接跳到「第 2 步」。\n"
-            "     • 如果提示「不是内部或外部命令」「找不到 python」→ 还没装，\n"
-            "       请先去官网下载安装：\n"
-            "           https://www.python.org/downloads/\n"
-            "       下载后双击安装包，安装界面最下方一定要勾选\n"
-            "       【Add Python to PATH】这一项，然后一路点 Next 装完。\n"
-            "       装完后关掉黑窗口，重新做一次第 1 步。\n"
-            "\n"
-            "═══════════════════════════════════════════════════\n"
-            "  第 2 步：安装 PyTorch (CPU版) 与 pycorrector\n"
-            "═══════════════════════════════════════════════════\n"
-            "\n"
-            "  在同一个黑窗口里，先复制粘贴下面这行并按【回车】（安装底层依赖）：\n"
-            "\n"
-            "         pip install torch --index-url https://download.pytorch.org/whl/cpu\n"
-            "\n"
-            "  等待安装完成（因为没有显卡驱动包，速度较快），接着再执行下面这行：\n"
-            "\n"
-            "         pip install pycorrector -i https://pypi.tuna.tsinghua.edu.cn/simple\n"
-            "\n"
-            "  说明：看到最后出现 Successfully installed pycorrector-x.x.x 就表示装好了。\n"
-            "\n"
-            "═══════════════════════════════════════════════════\n"
-            "  第 3 步：验证安装成功\n"
-            "═══════════════════════════════════════════════════\n"
-            "\n"
-            "  在黑窗口里运行：\n"
-            "\n"
-            "         python -c \"import pycorrector; print('OK')\"\n"
-            "\n"
-            "  • 如果只输出一行 OK，说明安装成功。\n"
-            "  • 如果报错 ModuleNotFoundError，说明第 2 步没装成功，重做第 2 步。\n"
-            "\n"
-            "═══════════════════════════════════════════════════\n"
-            "  第 4 步：让本软件认到它\n"
-            "═══════════════════════════════════════════════════\n"
-            "\n"
-            "  ① 关掉本软件（直接点右上角 ×）。\n"
-            "  ② 重新打开本软件。\n"
-            "  ③ 不需要查看任何状态 —— 安装成功后，错别字检查会自动\n"
-            "     额外调用 NLP 引擎进行更深度的检测。\n"
-            "\n"
-            "  ※ 也可以不重启软件，点本卡片左下角的【🔄 重新检测安装状态】\n"
-            "     按钮立即刷新；下方状态行变绿即表示已识别。\n"
-            "═══════════════════════════════════════════════════\n"
-            "  附：模型文件存在哪？怎么清理？\n"
-            "═══════════════════════════════════════════════════\n"
-            "\n"
-            "  pycorrector 第一次运行时会自动下载几百 MB 的语言模型。\n"
-            "  默认存放路径（Windows）：\n"
-            "         C:\\Users\\你的用户名\\.pycorrector\n"
-            "\n"
-            "  如果模型坏了想重下，把上面那个文件夹整个删掉，下次运行就会\n"
-            "  自动重新下载。也可以在黑窗口里运行：\n"
-            "\n"
-            "         rmdir /s /q %USERPROFILE%\\.pycorrector\n"
-            "\n"
-            "═══════════════════════════════════════════════════\n"
-            "  附：怎么卸载 pycorrector？\n"
-            "═══════════════════════════════════════════════════\n"
-            "\n"
-            "  在黑窗口里运行：\n"
-            "\n"
-            "         pip uninstall pycorrector\n"
-            "\n"
-            "  跳出「Proceed (Y/n)?」就输入 y 再按回车。\n"
-            "\n"
-            "═══════════════════════════════════════════════════\n"
-            "  常见问题\n"
-            "═══════════════════════════════════════════════════\n"
-            "\n"
-            "  Q：报错「pip 不是内部或外部命令」？\n"
-            "  A：第 1 步装 Python 时没勾选【Add Python to PATH】。\n"
-            "     重新装一次 Python，记得勾上。\n"
-            "\n"
-            "  Q：安装很慢、一直转圈？\n"
-            "  A：换网络试试，或确认命令里有 -i 清华镜像那一段。\n"
-            "\n"
-            "  Q：装完软件还是显示「未安装」？\n"
-            "  A：先点本卡片【🔄 重新检测安装状态】；如果还不行，\n"
-            "     完全关闭软件再重新打开。"
-        )
-        tutorial_text.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
-        v.addWidget(tutorial_text, 1)
-
-        # 操作按钮行
-        btn_row = QHBoxLayout()
-
-        copy_btn = QPushButton("📋 复制全部")
-        copy_btn.clicked.connect(lambda: (
-            QApplication.clipboard().setText(tutorial_text.toPlainText()),
-            self._show_toast("已复制到剪贴板", "success"),
-        ))
-        btn_row.addWidget(copy_btn)
-
-        reload_btn = QPushButton("🔄 重新检测安装状态")
-        reload_btn.setToolTip("不重启软件即可重新探测 pycorrector 是否可导入")
-        def _reload():
-            ok = _is_pycorrector_available()
-            if ok:
-                status.setText("<b style='color:#00bfa5;'>✅ 当前状态：pycorrector 已安装</b>")
-            else:
-                status.setText("<b style='color:#ffab40;'>⚠️ 当前状态：pycorrector 未安装</b>")
-        reload_btn.clicked.connect(_reload)
-        btn_row.addWidget(reload_btn)
-
-        btn_row.addStretch()
-        close_btn = QPushButton("关闭")
-        close_btn.clicked.connect(dlg.accept)
-        btn_row.addWidget(close_btn)
-
-        v.addLayout(btn_row)
-
-        dlg.exec()
 
     # ===== 事件处理 =====
 
@@ -2267,7 +2111,7 @@ class MainWindow(QMainWindow):
 
     def _on_typo_cell_clicked(self, row: int, col: int):
         """单击「忽略」列 → 从表格与缓存中移除该行。其它列不做处理。"""
-        if col != 3:
+        if col != 4:
             return
         if row < 0 or row >= self.typo_table.rowCount():
             return
@@ -2296,9 +2140,19 @@ class MainWindow(QMainWindow):
         for r in range(self.typo_table.rowCount()):
             if r >= len(data):
                 break
-            fix_item = self.typo_table.item(r, 2)
+            fix_item = self.typo_table.item(r, 3)
             if fix_item is not None:
                 data[r]["suggestion"] = fix_item.text()
+
+    def _highlight_wrong_in_context(self, context: str, wrong: str) -> str:
+        """把 context 中第一次出现的 wrong 用【】括出，便于在表格里定位错处。
+        找不到（理论边界）则原样返回。用纯子串查找，wrong 含特殊字符也无影响。"""
+        if not context or not wrong:
+            return context or ""
+        idx = context.find(wrong)
+        if idx == -1:
+            return context
+        return f"{context[:idx]}【{context[idx:idx + len(wrong)]}】{context[idx + len(wrong):]}"
 
     def _render_table_from_data(self, results: list):
         """把缓存列表渲染到共用表格"""
@@ -2313,16 +2167,24 @@ class MainWindow(QMainWindow):
             pos_item.setData(Qt.ItemDataRole.UserRole, item["para_idx"])
             self.typo_table.setItem(row_idx, 0, pos_item)
 
-            # 列1：原文片段
-            ctx_item = QTableWidgetItem(item["context"])
+            # 列1：原文片段（把命中的错词用【】括出，便于定位）
+            ctx_item = QTableWidgetItem(
+                self._highlight_wrong_in_context(item.get("context", ""), item.get("wrong", ""))
+            )
             ctx_item.setFlags(ctx_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
             self.typo_table.setItem(row_idx, 1, ctx_item)
 
-            # 列2：建议修改（可编辑）
-            fix_item = QTableWidgetItem(item.get("suggestion", ""))
-            self.typo_table.setItem(row_idx, 2, fix_item)
+            # 列2：修改前（只读，显示原始错词）
+            wrong_item = QTableWidgetItem(item.get("wrong", ""))
+            wrong_item.setFlags(wrong_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+            wrong_item.setForeground(QColor("#c62828"))
+            self.typo_table.setItem(row_idx, 2, wrong_item)
 
-            # 列3：忽略 —— 普通文字单元格（点击由 cellClicked 捕获）
+            # 列3：修改后（可编辑）
+            fix_item = QTableWidgetItem(item.get("suggestion", ""))
+            self.typo_table.setItem(row_idx, 3, fix_item)
+
+            # 列4：忽略 —— 普通文字单元格（点击由 cellClicked 捕获）
             ig_item = QTableWidgetItem("忽略")
             ig_item.setFlags(
                 Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable
@@ -2335,7 +2197,7 @@ class MainWindow(QMainWindow):
             ig_font.setBold(True)
             ig_item.setFont(ig_font)
             ig_item.setToolTip("点击忽略此条")
-            self.typo_table.setItem(row_idx, 3, ig_item)
+            self.typo_table.setItem(row_idx, 4, ig_item)
 
         # 计数标签 + 应用按钮启用状态
         kind_text = "错别字" if self._current_check_kind == "typo" else "重复字词"
@@ -2357,7 +2219,10 @@ class MainWindow(QMainWindow):
             self._log_clean(f"✅ {message}")
 
         self.status_bar.showMessage(message)
-        self._show_toast(message[:40], "success")
+        # Toast 已支持多行自适应高度；过长（孤立标记很多时）截断并提示去结果框看详情
+        _lines = message.split("\n")
+        _toast = message if len(_lines) <= 10 else "\n".join(_lines[:10]) + "\n  …（详见下方结果框）"
+        self._show_toast(_toast, "warning" if "⚠️" in message else "success")
 
         # 写入操作历史（仅当 _start_clean_worker 提供了 history_label）
         label = getattr(self, "_pending_history_label", None)

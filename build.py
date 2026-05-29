@@ -46,12 +46,9 @@ _COMMON_ARGS = [
     # ── 收集整个包的数据文件 ──
     "--collect-all", "docx",
     "--collect-all", "lxml",
-    # ── 排除 NLP 相关重型依赖 ──
-    # 离线 NLP 引擎（pycorrector + torch + transformers + 模型）只供
-    # 「专业用户」在系统 Python 中手动安装，绝不打包进 exe，
-    # 否则 exe 体积会从 ~80MB 飙到 2GB+ 且启动极慢。
-    # cleaner.py 中 check_typos_pycorrector() 已用 try/except ImportError
-    # 做了优雅降级，因此打包后软件仍能完整运行（仅 NLP 路径直接 return []）。
+    # ── 排除重型 ML 依赖 ──
+    # 本软件不使用 pycorrector / torch / transformers 等重型 NLP 库；
+    # 显式排除以防被间接收集，避免 exe 体积从 ~80MB 飙到 2GB+。
     "--exclude-module", "torch",
     "--exclude-module", "torchvision",
     "--exclude-module", "torchaudio",

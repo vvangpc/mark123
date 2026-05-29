@@ -2,7 +2,7 @@
 """
 workers.py — 后台线程与通用小部件
 抽离自 main_window.py，包含：
-- _longest_nonspace_run / _is_pycorrector_available 两个工具函数
+- _longest_nonspace_run 工具函数
 - AnnotateWorker / CleanWorker 两个后台 QThread
 - ToastWidget 右上角悬浮提示
 """
@@ -17,7 +17,7 @@ from annotator import (
 from cleaner import (
     remove_suoshu, unify_halfwidth_punct, convert_fullwidth_to_halfwidth,
     detect_orphan_marks, fix_consecutive_punct, detect_orphan_figures,
-    check_typos_wordbank, check_typos_pycorrector, check_duplicate_words,
+    check_typos_wordbank, check_duplicate_words,
     merge_typo_results, apply_typo_corrections,
 )
 
@@ -43,15 +43,6 @@ def _longest_nonspace_run(s: str) -> str:
         if len(seg) > len(best):
             best = seg
     return best
-
-
-def _is_pycorrector_available() -> bool:
-    """检测 pycorrector 是否已安装"""
-    try:
-        import pycorrector  # noqa: F401
-        return True
-    except ImportError:
-        return False
 
 
 class AnnotateWorker(QThread):
@@ -215,10 +206,8 @@ class CleanWorker(QThread):
 
             elif self.action == "typo_check":
                 wb_results = check_typos_wordbank(paragraphs, sections)
-                self.progress.emit(50)
-                pc_results = check_typos_pycorrector(paragraphs, sections)
-                self.progress.emit(90)
-                merged = merge_typo_results(wb_results, pc_results)
+                self.progress.emit(80)
+                merged = merge_typo_results(wb_results)
                 self.progress.emit(100)
                 self.typo_results.emit(merged)
                 count = len(merged)
