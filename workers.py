@@ -1,15 +1,13 @@
 # -*- coding: utf-8 -*-
 """
-workers.py — 后台线程与通用小部件
+workers.py — 后台线程
 抽离自 main_window.py，包含：
 - _longest_nonspace_run 工具函数
 - AnnotateWorker / CleanWorker 两个后台 QThread
-- ToastWidget 右上角悬浮提示
 """
 import traceback
 
-from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QThread
-from PyQt6.QtWidgets import QLabel
+from PyQt6.QtCore import pyqtSignal, QThread
 
 from annotator import (
     smart_annotate_section, smart_remove_section,
@@ -229,46 +227,3 @@ class CleanWorker(QThread):
 
         except Exception as e:
             self.error.emit(f"操作失败：{str(e)}\n{traceback.format_exc()}")
-
-
-class ToastWidget(QLabel):
-    """悬浮Toast提示"""
-
-    def __init__(self, parent, message: str, toast_type: str = "info"):
-        super().__init__(message, parent)
-        self.setFixedHeight(42)
-        self.setMinimumWidth(280)
-        self.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
-
-        # 根据类型设置颜色
-        colors = {
-            "info": "#00bfa5",
-            "success": "#00e676",
-            "error": "#ff5252",
-            "warning": "#ffab40"
-        }
-        border_color = colors.get(toast_type, colors["info"])
-
-        self.setStyleSheet(f"""
-            QLabel {{
-                background-color: rgba(30, 30, 30, 0.95);
-                color: #ffffff;
-                padding: 10px 20px;
-                border-radius: 8px;
-                border-left: 5px solid {border_color};
-                font-size: 13px;
-                font-weight: 500;
-            }}
-        """)
-
-        # 定位到右上角
-        parent_width = parent.width() if parent else 800
-        self.move(parent_width - self.width() - 30, 30)
-        self.show()
-
-        # 3秒后自动消失
-        QTimer.singleShot(3000, self._fade_out)
-
-    def _fade_out(self):
-        self.close()
-        self.deleteLater()

@@ -85,5 +85,14 @@ def install_listener(window) -> QLocalServer:
             _handle_payload(client)
 
     server.newConnection.connect(_on_new_conn)
-    server.listen(SERVER_NAME)
+    if not server.listen(SERVER_NAME):
+        # 偶见残留管道未被 removeServer 清掉：再清一次重试
+        QLocalServer.removeServer(SERVER_NAME)
+        if not server.listen(SERVER_NAME):
+            import sys
+            print(
+                f"single_instance: 监听 {SERVER_NAME} 失败：{server.errorString()}；"
+                "后续右键打开 docx 将无法复用本窗口",
+                file=sys.stderr,
+            )
     return server

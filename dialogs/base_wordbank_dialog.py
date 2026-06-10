@@ -16,7 +16,7 @@ UI 结构、过滤、增删、导入导出逻辑完全复用。
 """
 import json
 
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QPushButton, QLabel,
     QTableWidget, QTableWidgetItem, QHeaderView, QMessageBox,
@@ -64,6 +64,12 @@ class BaseWordbankDialog(QDialog):
 
         self._items: list = list(self.load_items())
         self._search_text: str = ""
+
+        # 搜索去抖：连续输入时只在停顿 200ms 后重建一次列表
+        self._search_timer = QTimer(self)
+        self._search_timer.setSingleShot(True)
+        self._search_timer.setInterval(200)
+        self._search_timer.timeout.connect(self._rebuild_list)
 
         self._build_ui()
         self._rebuild_list()
@@ -190,7 +196,7 @@ class BaseWordbankDialog(QDialog):
     # ── 事件处理 ──────────────────────────────────────────────
     def _on_search_changed(self, text: str):
         self._search_text = text.strip().lower()
-        self._rebuild_list()
+        self._search_timer.start()  # 去抖：停顿 200ms 后才重建
 
     def _on_add_clicked(self):
         text = self.add_edit.text().strip()
@@ -202,10 +208,11 @@ class BaseWordbankDialog(QDialog):
             return
         self._items.insert(0, text)
         self.add_edit.clear()
+        # 清空搜索后立即重建（搜索重建有去抖延迟，新增条目应立刻可见）
         if self._search_text:
             self.search_edit.clear()
-        else:
-            self._rebuild_list()
+        self._search_timer.stop()
+        self._rebuild_list()
 
     def _on_delete_clicked(self):
         selected = self.grid.selectedItems()

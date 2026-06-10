@@ -1,7 +1,8 @@
 [project]
 name = "patent-marker"
-version = "0.1.0"
-description = "Add your description here"
+# 仅作包元数据展示；应用运行时版本以 version.py 的 __version__ 为准（CI 只改写 version.py）
+version = "3.9.3"
+description = "专利标记助手 — 专利 docx 文档标注与检查桌面工具（PyQt6）"
 readme = "README.md"
 requires-python = ">=3.14"
 dependencies = [

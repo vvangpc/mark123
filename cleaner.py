@@ -6,7 +6,7 @@ cleaner.py — 文本清洗功能模块
 """
 import re
 from functools import lru_cache
-from annotator import annotate_paragraph_safe
+from annotator import annotate_paragraph_safe, _build_xml_char_map
 
 # 权利要求序号行头（如 "1." / "2、" / "3．"）；与 claim_check._CLAIM_HEAD_RE 语义一致
 _CLAIM_HEAD_RE = re.compile(r'^\s*(\d+)\s*[\.\．\、]')
@@ -60,6 +60,9 @@ def remove_suoshu(paragraphs, sections: dict, selected_section_names: list) -> i
 # 注意：不包含 < > ，避免误伤撰写中作为「大于/小于」使用的数学符号
 # 注意：半角句点 “.” 不放在此 map 里，改由 _safe_replace_dot 单独处理，
 #        以避免把权利要求书序号 “1.” “2.” 错误替换成 “1。” “2。”
+# 注意：直引号 ' " 也不放在此 map 里——它们无方向，恒映射左引号会把
+#        "高强度" 变成 “高强度“；改由 _safe_replace_quotes_in_paragraph
+#        按「先开后闭」交替配对处理
 _HALFWIDTH_MAP = {
     ",": "，",
     ";": "；",
@@ -68,8 +71,6 @@ _HALFWIDTH_MAP = {
     "!": "！",
     "(": "（",
     ")": "）",
-    "'": "‘",   # half-width single quote -> CJK left single quote
-    '"': "“",   # half-width double quote -> CJK left double quote
 }
 
 # 全角 → 半角（默认不启用；用户在 UI 勾选时执行）
@@ -133,6 +134,57 @@ def _safe_replace_dot_in_paragraph(paragraph) -> bool:
     return changed
 
 
+# 直引号配对替换：'X' → ‘X’，"X" → “X”
+# 仅当本段中该引号数量为偶数（可完整配对）且至少一处紧邻中文时才转换，
+# 避免误伤英寸/英尺记号（5'6"）或纯英文片段。
+_QUOTE_PAIRS = {
+    '"': ("“", "”"),
+    "'": ("‘", "’"),
+}
+_CJK_CHAR_RE = re.compile(_CJK)
+
+
+def _safe_replace_quotes_in_paragraph(paragraph) -> bool:
+    """
+    将段落中成对的半角直引号按「先开后闭」交替替换为全角弯引号。
+    跨 run / w:t 的引号对也能正确配对（基于段落级字符映射原位改写）。
+    返回是否有替换发生。
+    """
+    full_text, char_info = _build_xml_char_map(paragraph)
+    if not full_text:
+        return False
+
+    edits = {}  # 位置 -> 新字符
+    for ch, (open_q, close_q) in _QUOTE_PAIRS.items():
+        positions = [i for i, c in enumerate(full_text) if c == ch]
+        if not positions or len(positions) % 2 != 0:
+            continue
+        has_cjk_context = any(
+            (p > 0 and _CJK_CHAR_RE.match(full_text[p - 1]))
+            or (p + 1 < len(full_text) and _CJK_CHAR_RE.match(full_text[p + 1]))
+            for p in positions
+        )
+        if not has_cjk_context:
+            continue
+        for k, p in enumerate(positions):
+            edits[p] = open_q if k % 2 == 0 else close_q
+
+    if not edits:
+        return False
+
+    # 替换为等长字符，可按 wt 分组原位改写
+    by_wt = {}
+    for pos, new_ch in edits.items():
+        wt, idx = char_info[pos]
+        by_wt.setdefault(wt, []).append((idx, new_ch))
+    for wt, items in by_wt.items():
+        chars = list(wt.text or "")
+        for idx, new_ch in items:
+            chars[idx] = new_ch
+        wt.text = "".join(chars)
+    return True
+
+
 def _build_fullwidth_replace_dict(paragraph_text: str) -> dict:
     """
     针对当前段落文本，找出需要替换的全角→半角条目。
@@ -181,11 +233,15 @@ def fix_consecutive_punct(paragraphs, max_passes: int = 3, sections: dict = None
 
     affected = set()
     for _ in range(max_passes):
+        changed_this_pass = False
         for idx, para in targets:
             if not para.text.strip():
                 continue
             if annotate_paragraph_safe(para, _CONSECUTIVE_PUNCT_MAP):
                 affected.add(idx)
+                changed_this_pass = True
+        if not changed_this_pass:
+            break
     return len(affected)
 
 
@@ -213,12 +269,15 @@ def unify_halfwidth_punct(paragraphs, sections: dict = None) -> int:
         if not text.strip():
             continue
         touched = False
-        # 1) 常规半角 → 全角（不含句点 "."）
+        # 1) 常规半角 → 全角（不含句点 "." 与引号）
         replace_dict = _build_punct_replace_dict(text)
         if replace_dict and annotate_paragraph_safe(para, replace_dict):
             touched = True
         # 2) 半角句点 "." → "。" 的安全替换（跳过 "数字." 序号格式）
         if _safe_replace_dot_in_paragraph(para):
+            touched = True
+        # 3) 成对直引号 → 全角弯引号（按先开后闭交替配对）
+        if _safe_replace_quotes_in_paragraph(para):
             touched = True
         if touched:
             count += 1
@@ -403,27 +462,41 @@ def check_typos_wordbank(paragraphs, sections: dict = None) -> list:
     wordbank = _get_active_wordbank()
     locate = _make_locator_with_paragraphs(sections or {}, paragraphs)
 
+    # 全词库合成单个 alternation 正则，每段只扫一遍（原实现为 段落数×词条数
+    # 次子串查找）。长词优先排序使「权力要求书」只命中最长词条，
+    # 而不是同时命中「权力要求」与「权力要求书」重复报告。
+    sug_map = {e["wrong"]: e["suggestion"] for e in wordbank if e.get("wrong")}
+    if not sug_map:
+        return results
+    pattern = re.compile("|".join(
+        re.escape(w) for w in sorted(sug_map, key=len, reverse=True)
+    ))
+
     for i in target:
         text = paragraphs[i].text
         if not text.strip():
             continue
-        for entry in wordbank:
-            wrong = entry["wrong"]
-            suggestion = entry["suggestion"]
-            if wrong in text:
-                # 提取上下文（前后各15字）
-                pos = text.find(wrong)
-                start = max(0, pos - 15)
-                end = min(len(text), pos + len(wrong) + 15)
-                context = text[start:end]
-                results.append({
-                    "para_idx": i,
-                    "section": locate(i),
-                    "context": context,
-                    "wrong": wrong,
-                    "suggestion": suggestion,
-                    "kind": "wordbank",
-                })
+        # 同一段中每处出现各报一条（应用时会整段全部替换，
+        # 逐条上报使显示数量与实际替换处数一致）；
+        # occurrence 按各 wrong 词在段内的出现次序计数
+        occ_counter: dict = {}
+        for m in pattern.finditer(text):
+            wrong = m.group(0)
+            occ = occ_counter.get(wrong, 0)
+            occ_counter[wrong] = occ + 1
+            pos = m.start()
+            # 提取上下文（前后各15字）
+            start = max(0, pos - 15)
+            end = min(len(text), pos + len(wrong) + 15)
+            results.append({
+                "para_idx": i,
+                "section": locate(i),
+                "context": text[start:end],
+                "wrong": wrong,
+                "suggestion": sug_map[wrong],
+                "kind": "wordbank",
+                "occurrence": occ,
+            })
     return results
 
 
@@ -474,6 +547,15 @@ def check_duplicate_words(paragraphs, sections: dict = None,
         text = paragraphs[i].text
         if not text or not text.strip():
             continue
+        # 忽略词在本段中的出现区间：每段只扫一遍，供所有 match 复用
+        # （原实现对每个 match × 每个忽略词重复 find 扫描）
+        ignore_spans = []
+        if ignore_set:
+            for ig in ignore_set:
+                idx = text.find(ig)
+                while idx != -1:
+                    ignore_spans.append((idx, idx + len(ig)))
+                    idx = text.find(ig, idx + 1)
         for m in pattern.finditer(text):
             unit = m.group(1)
             full = m.group(0)
@@ -487,21 +569,9 @@ def check_duplicate_words(paragraphs, sections: dict = None,
             if ignore_set and (unit in ignore_set or full in ignore_set):
                 continue
             # 检查重复片段是否被忽略词在原文中的出现所覆盖
-            if ignore_set:
+            if ignore_spans:
                 match_s, match_e = m.start(), m.end()
-                covered = False
-                for ig in ignore_set:
-                    if len(ig) <= len(full):
-                        continue
-                    idx = text.find(ig)
-                    while idx != -1:
-                        if idx <= match_s and idx + len(ig) >= match_e:
-                            covered = True
-                            break
-                        idx = text.find(ig, idx + 1)
-                    if covered:
-                        break
-                if covered:
+                if any(s <= match_s and e >= match_e for s, e in ignore_spans):
                     continue
             # 过滤单字「的的、了了」等高频虚词时可后期再加（暂保留）
             key = (i, full)
@@ -527,7 +597,8 @@ def check_duplicate_words(paragraphs, sections: dict = None,
 def merge_typo_results(*result_lists) -> list:
     """
     合并多个来源（词库 / 重复词等）的结果，
-    去除重复项（同一段落同一 wrong 词只保留一条）。
+    去除重复项（同一段落同一 wrong 的同一处出现只保留一条；
+    occurrence 标记同段第几处出现，缺省视为第 0 处）。
     """
     seen = set()
     merged = []
@@ -535,7 +606,7 @@ def merge_typo_results(*result_lists) -> list:
         if not lst:
             continue
         for item in lst:
-            key = (item["para_idx"], item["wrong"])
+            key = (item["para_idx"], item["wrong"], item.get("occurrence", 0))
             if key in seen:
                 continue
             seen.add(key)

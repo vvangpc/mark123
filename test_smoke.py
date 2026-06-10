@@ -14,7 +14,7 @@ import sys
 def test_workers_import():
     from workers import (
         _longest_nonspace_run,
-        AnnotateWorker, CleanWorker, ToastWidget,
+        AnnotateWorker, CleanWorker,
     )
     assert _longest_nonspace_run("hello world") == "hello"
     assert _longest_nonspace_run("") == ""

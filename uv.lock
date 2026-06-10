@@ -78,7 +78,7 @@ wheels = [
 
 [[package]]
 name = "patent-marker"
-version = "0.1.0"
+version = "3.9.3"
 source = { virtual = "." }
 dependencies = [
     { name = "pyinstaller" },

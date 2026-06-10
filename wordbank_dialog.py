@@ -8,7 +8,7 @@ wordbank_dialog.py — 错别字词库编辑对话框
 """
 import json
 import os
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QColor, QBrush
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QPushButton, QLabel,
@@ -22,11 +22,23 @@ from config_manager import (
     load_disabled_builtin_wrongs, save_disabled_builtin_wrongs,
 )
 
-# 视觉常量
-_BUILTIN_BG = QColor(240, 240, 240)      # 内置：浅灰底
-_BUILTIN_FG = QColor(110, 110, 110)      # 内置：深灰字
-_USER_BG = QColor(255, 255, 255)         # 自定义：白底
-_USER_FG = QColor(30, 30, 30)            # 自定义：黑字
+
+def _cell_colors(theme: str) -> tuple:
+    """按主题返回单元格配色 (builtin_bg, builtin_fg, user_bg, user_fg)。
+    深色主题下不能用浅色底/黑字，否则与深色背景完全冲突。"""
+    if theme == "dark":
+        return (
+            QColor(45, 48, 52),       # 内置：深灰底
+            QColor(160, 160, 160),    # 内置：浅灰字
+            QColor(28, 32, 38),       # 自定义：深底
+            QColor(224, 224, 224),    # 自定义：浅字
+        )
+    return (
+        QColor(240, 240, 240),        # 内置：浅灰底
+        QColor(110, 110, 110),        # 内置：深灰字
+        QColor(255, 255, 255),        # 自定义：白底
+        QColor(30, 30, 30),           # 自定义：黑字
+    )
 
 
 class WordbankDialog(QDialog):
@@ -47,6 +59,17 @@ class WordbankDialog(QDialog):
 
         # 当前搜索关键字（小写）
         self._search_text: str = ""
+
+        # 单元格配色跟随主窗口主题（深色主题下白底黑字不可用）
+        theme = getattr(parent, "current_theme", "light")
+        (self._builtin_bg, self._builtin_fg,
+         self._user_bg, self._user_fg) = _cell_colors(theme)
+
+        # 搜索去抖：连续输入时只在停顿 200ms 后重建一次表格
+        self._search_timer = QTimer(self)
+        self._search_timer.setSingleShot(True)
+        self._search_timer.setInterval(200)
+        self._search_timer.timeout.connect(self._rebuild_table)
 
         self._build_ui()
         self._load_entries_from_disk()
@@ -114,6 +137,9 @@ class WordbankDialog(QDialog):
         # => 用「列间距 + 列头文字 + 分隔颜色」：通过在样式表为整表的网格线加深实现整体感，
         #    然后把 2 列之间的分隔特别渲染 —— 采用 item delegate 最稳。
         self._install_divider_delegate()
+        # 只在此处连接一次；重绘期间用 blockSignals 抑制，
+        # 不能在 _rebuild_table 里反复 connect（会叠加出 N 次回调）
+        self.table.itemChanged.connect(self._on_item_changed)
         layout.addWidget(self.table, 1)
 
         # 按钮行
@@ -234,11 +260,10 @@ class WordbankDialog(QDialog):
                     placeholder = QTableWidgetItem("")
                     placeholder.setFlags(placeholder.flags() & ~Qt.ItemFlag.ItemIsEditable
                                           & ~Qt.ItemFlag.ItemIsSelectable)
-                    placeholder.setBackground(QBrush(_USER_BG))
+                    placeholder.setBackground(QBrush(self._user_bg))
                     self.table.setItem(row_idx, col, placeholder)
 
         self.table.blockSignals(False)
-        self.table.itemChanged.connect(self._on_item_changed)
         self._update_count()
 
     def _set_cell_pair(self, row: int, col_start: int, indexed_entry):
@@ -255,8 +280,8 @@ class WordbankDialog(QDialog):
         wrong_item.setData(Qt.ItemDataRole.UserRole, entry_idx)
         sug_item.setData(Qt.ItemDataRole.UserRole, entry_idx)
 
-        bg = _BUILTIN_BG if is_builtin else _USER_BG
-        fg = _BUILTIN_FG if is_builtin else _USER_FG
+        bg = self._builtin_bg if is_builtin else self._user_bg
+        fg = self._builtin_fg if is_builtin else self._user_fg
         for it in (wrong_item, sug_item):
             it.setBackground(QBrush(bg))
             it.setForeground(QBrush(fg))
@@ -302,16 +327,17 @@ class WordbankDialog(QDialog):
 
     def _on_search_changed(self, text: str):
         self._search_text = text.strip().lower()
-        self._rebuild_table()
+        self._search_timer.start()  # 去抖：停顿 200ms 后才重建
 
     def _on_add_row(self):
         """在 _entries 开头插入一个空白用户条目，然后重绘并聚焦"""
         self._entries.insert(0, {"wrong": "", "suggestion": "", "kind": "user"})
-        # 添加新行时清空搜索以便立即看到
+        # 添加新行时清空搜索以便立即看到；搜索重建有去抖延迟，
+        # 此处需要立即重建（下方紧接着要 editItem 新行）
         if self._search_text:
-            self.search_edit.clear()  # 会触发重绘
-        else:
-            self._rebuild_table()
+            self.search_edit.clear()
+        self._search_timer.stop()
+        self._rebuild_table()
         # 聚焦到第一行第一列
         self.table.setCurrentCell(0, 0)
         item = self.table.item(0, 0)

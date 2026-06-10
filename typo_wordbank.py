@@ -68,7 +68,6 @@ WORDBANK = [
     {"wrong": "附图说朋",     "suggestion": "附图说明"},
     {"wrong": "说眀书",       "suggestion": "说明书"},
     {"wrong": "说明书附眀",   "suggestion": "说明书附图"},
-    {"wrong": "权力要求",     "suggestion": "权利要求"},
     {"wrong": "权利要术",     "suggestion": "权利要求"},
     {"wrong": "其待征在于",   "suggestion": "其特征在于"},
     {"wrong": "其特微在于",   "suggestion": "其特征在于"},

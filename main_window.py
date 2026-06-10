@@ -248,10 +248,13 @@ class CleanWorker(QThread):
 
 
 class ToastWidget(QLabel):
-    """悬浮Toast提示"""
+    """悬浮Toast提示。定位由 MainWindow 统一管理（堆叠 + resize 跟随），
+    自身只负责样式、尺寸与自动消失。"""
 
-    def __init__(self, parent, message: str, toast_type: str = "info"):
+    def __init__(self, parent, message: str, toast_type: str = "info",
+                 on_closed=None):
         super().__init__(message, parent)
+        self._on_closed = on_closed
         self.setWordWrap(True)                 # 长文本/多行自动换行，避免被裁切遮挡
         self.setMinimumWidth(280)
         self.setMaximumWidth(460)              # 过宽则换行，不撑出屏幕
@@ -285,17 +288,29 @@ class ToastWidget(QLabel):
         longest = max((fm.horizontalAdvance(ln) for ln in str(message).split("\n")), default=0)
         self.setFixedWidth(min(max(longest + 56, 280), 460))
         self.adjustSize()
-        # 定位到右上角
-        parent_width = parent.width() if parent else 800
-        self.move(parent_width - self.width() - 30, 30)
-        self.show()
 
         # 3秒后自动消失
         QTimer.singleShot(3000, self._fade_out)
 
     def _fade_out(self):
+        if self._on_closed is not None:
+            try:
+                self._on_closed(self)
+            except Exception:
+                pass
         self.close()
         self.deleteLater()
+
+
+class _ClickableLabel(QLabel):
+    """整体可点击的标签：点击任意位置发出 clicked 信号。
+    不要用 `label.mousePressEvent = lambda ...` 覆盖实例方法——那会绕过
+    QLabel 自身的事件处理（linkActivated 等信号会因此永不触发）。"""
+    clicked = pyqtSignal()
+
+    def mousePressEvent(self, event):
+        self.clicked.emit()
+        super().mousePressEvent(event)
 
 
 class MainWindow(QMainWindow):
@@ -313,6 +328,7 @@ class MainWindow(QMainWindow):
         self.typo_data = []          # 当前错别字检查结果
         self.dup_data = []           # 当前重复字词检查结果
         self.history_entries = []    # 内存中累计的操作历史
+        self._active_toasts = []     # 当前显示中的 toast（用于堆叠与 resize 重排）
         # 权利要求书检查 Tab 的状态
         self._claim_start_idx = None       # 权利要求书段落起始索引
         self._claim_end_idx = None         # 权利要求书段落结束索引（不含）
@@ -821,7 +837,7 @@ class MainWindow(QMainWindow):
         engine_layout.setSpacing(20)
 
         wb_count = self._get_wordbank_count()
-        self.wb_label = QLabel()
+        self.wb_label = _ClickableLabel()
         self.wb_label.setTextFormat(Qt.TextFormat.RichText)
         self.wb_label.setCursor(Qt.CursorShape.PointingHandCursor)
         self.wb_label.setToolTip("点击打开词库编辑器，可添加 / 修改 / 删除自定义词条")
@@ -829,16 +845,16 @@ class MainWindow(QMainWindow):
             f"✅  错别字词库  —  已加载 <b>{wb_count}</b> 条规则  "
             f"（<a href='#edit'>点击编辑词库</a>）"
         )
-        self.wb_label.linkActivated.connect(lambda _: self._on_open_wordbank_dialog())
-        self.wb_label.mousePressEvent = lambda e: self._on_open_wordbank_dialog()
+        # 整个标签可点；不再连接 linkActivated，避免点中链接区双开对话框
+        self.wb_label.clicked.connect(self._on_open_wordbank_dialog)
         engine_layout.addWidget(self.wb_label)
 
         # 重复字词忽略词库入口
-        self.dup_ignore_label = QLabel()
+        self.dup_ignore_label = _ClickableLabel()
         self.dup_ignore_label.setTextFormat(Qt.TextFormat.RichText)
         self.dup_ignore_label.setCursor(Qt.CursorShape.PointingHandCursor)
         self.dup_ignore_label.setToolTip("点击打开「重复字词忽略词库」编辑器")
-        self.dup_ignore_label.mousePressEvent = lambda e: self._on_open_dup_ignore_dialog()
+        self.dup_ignore_label.clicked.connect(self._on_open_dup_ignore_dialog)
         self._refresh_dup_ignore_label()
         engine_layout.addWidget(self.dup_ignore_label)
 
@@ -1264,6 +1280,9 @@ class MainWindow(QMainWindow):
 
     def dropEvent(self, event: QDropEvent):
         """释放拖入文件时的处理"""
+        if self._is_busy():
+            self._show_toast("正在处理中，请稍候再切换文件", "info")
+            return
         urls = event.mimeData().urls()
         for url in urls:
             file_path = url.toLocalFile()
@@ -1275,6 +1294,9 @@ class MainWindow(QMainWindow):
 
     def _on_select_file(self):
         """选择文件"""
+        if self._is_busy():
+            self._show_toast("正在处理中，请稍候再切换文件", "info")
+            return
         start_dir = ""
         try:
             start_dir = self.settings.get_last_dir() or ""
@@ -1344,6 +1366,16 @@ class MainWindow(QMainWindow):
             # 把权利要求书内容加载到新 Tab
             self._claim_tab_load_from_doc()
 
+            # 作废上一份文档的错别字/重复字词检查缓存——
+            # 旧结果的 para_idx 指向旧文档，残留会导致新文档显示
+            # 旧结果、甚至按旧位置应用修正
+            self.typo_data = []
+            self.dup_data = []
+            self._current_check_kind = None
+            self.typo_table.setRowCount(0)
+            self.typo_count_label.setText("")
+            self.typo_apply_btn.setEnabled(False)
+
             # 加载新文档时清空历史与禁用「文件生成」
             self._clear_history()
 
@@ -1386,12 +1418,7 @@ class MainWindow(QMainWindow):
             return
 
         # 后台 worker 正在跑时拒绝重新加载，避免半截改写 doc_data
-        busy = False
-        if getattr(self, "worker", None) is not None and self.worker.isRunning():
-            busy = True
-        if getattr(self, "clean_worker", None) is not None and self.clean_worker.isRunning():
-            busy = True
-        if busy:
+        if self._is_busy():
             self._raise_to_front()
             self._show_toast("正在处理中，请稍候再切换文件", "info")
             return
@@ -1475,6 +1502,9 @@ class MainWindow(QMainWindow):
         """通用：启动标注 Worker（仅修改内存中的 doc_data）"""
         if not self._validate_before_annotate():
             return
+        if self._is_busy():
+            self._show_toast("正在处理中，请等待当前操作完成", "warning")
+            return
         self._sync_marks_from_editor()
 
         action_name = "标注" if action == "add" else "删除标记"
@@ -1522,6 +1552,9 @@ class MainWindow(QMainWindow):
         """将内存中累计的所有修改保存为新的 docx"""
         if not self.doc_data:
             self._show_toast("请先打开文档！", "error")
+            return
+        if self._is_busy():
+            self._show_toast("正在处理中，请等待当前操作完成后再生成文件", "warning")
             return
         # 权利要求书 Tab 若有未确认修改，提示用户先确认
         if getattr(self, "_claim_dirty", False):
@@ -1761,8 +1794,22 @@ class MainWindow(QMainWindow):
                 return "已标注"
         return "已标注"
 
-    def _set_buttons_enabled(self, enabled: bool):
-        """设置标注操作按钮状态"""
+    def _is_busy(self) -> bool:
+        """是否有后台 worker 正在读写内存中的文档树"""
+        w = getattr(self, "worker", None)
+        if w is not None and w.isRunning():
+            return True
+        w = getattr(self, "clean_worker", None)
+        if w is not None and w.isRunning():
+            return True
+        return False
+
+    def _set_doc_ops_enabled(self, enabled: bool):
+        """任一后台 worker 运行期间，禁掉所有会读写文档树的入口
+        （标注组 / 清洗检查组 / 权要 Tab / 章节预览 / 生成文件），
+        防止两个线程并发读写同一棵 lxml 树导致文档损坏或崩溃。
+        恢复时按各控件自身的状态条件点亮。"""
+        # 标注组
         self.annotate_btn.setEnabled(enabled)
         self.annotate_claims_btn.setEnabled(enabled)
         self.annotate_impl_btn.setEnabled(enabled)
@@ -1770,11 +1817,27 @@ class MainWindow(QMainWindow):
         self.confirm_marks_btn.setEnabled(enabled)
         self.refresh_marks_btn.setEnabled(enabled)
         self.file_btn.setEnabled(enabled)
+        # 清洗 / 检查组
+        self.suoshu_btn.setEnabled(enabled)
+        self.punct_btn.setEnabled(enabled)
+        self.orphan_btn.setEnabled(enabled)
+        self.typo_check_btn.setEnabled(enabled)
+        self.dup_check_btn.setEnabled(enabled)
+        self.typo_apply_btn.setEnabled(enabled and bool(self._active_cache_list()))
+        # 权要 Tab
+        self.claim_check_btn.setEnabled(enabled and self._claim_loaded)
+        self.claim_confirm_btn.setEnabled(enabled and self._claim_dirty)
+        # 章节预览按钮
+        for i in range(self.section_buttons_layout.count()):
+            w = self.section_buttons_layout.itemAt(i).widget()
+            if w is not None:
+                w.setEnabled(enabled)
         # generate_btn 仅在有历史时启用
-        if enabled and self.history_entries:
-            self.generate_btn.setEnabled(True)
-        elif not enabled:
-            self.generate_btn.setEnabled(False)
+        self.generate_btn.setEnabled(enabled and bool(self.history_entries))
+
+    def _set_buttons_enabled(self, enabled: bool):
+        """设置标注操作按钮状态（与清洗组互锁，见 _set_doc_ops_enabled）"""
+        self._set_doc_ops_enabled(enabled)
 
     def _toggle_theme(self):
         """切换深色/浅色主题"""
@@ -1834,7 +1897,11 @@ class MainWindow(QMainWindow):
         self._manual_update_checker.start()
 
     def closeEvent(self, event):
-        """窗口关闭时持久化配置"""
+        """窗口关闭时持久化配置；先等运行中的后台线程退出，
+        避免 QThread 随窗口销毁时崩溃（Destroyed while thread is still running）"""
+        for w in (getattr(self, "worker", None), getattr(self, "clean_worker", None)):
+            if w is not None and w.isRunning():
+                w.wait(5000)
         try:
             self.settings.set_theme(self.current_theme)
             self.settings.set_geometry(self.saveGeometry())
@@ -1906,15 +1973,37 @@ class MainWindow(QMainWindow):
         scrollbar.setValue(scrollbar.maximum())
 
     def _show_toast(self, message: str, toast_type: str = "info"):
-        """显示Toast提示"""
+        """显示Toast提示（多条纵向堆叠，不互相遮挡）"""
         try:
-            toast = ToastWidget(self, message, toast_type)
-            # 重新定位到右上角
-            toast.adjustSize()
-            x = self.width() - toast.width() - 30
-            toast.move(max(x, 10), 30)
+            toast = ToastWidget(self, message, toast_type,
+                                on_closed=self._on_toast_closed)
+            self._active_toasts.append(toast)
+            self._reposition_toasts()
+            toast.show()
         except Exception:
             pass  # Toast显示失败不影响主流程
+
+    def _reposition_toasts(self):
+        """把所有活跃 toast 右对齐并自上而下堆叠"""
+        y = 30
+        for t in self._active_toasts:
+            x = self.width() - t.width() - 30
+            t.move(max(x, 10), y)
+            y += t.height() + 8
+
+    def _on_toast_closed(self, toast):
+        """toast 消失时从活跃列表移除并重排剩余 toast"""
+        try:
+            self._active_toasts.remove(toast)
+        except ValueError:
+            pass
+        self._reposition_toasts()
+
+    def resizeEvent(self, event):
+        """窗口缩放时让活跃 toast 跟随右上角"""
+        super().resizeEvent(event)
+        if getattr(self, "_active_toasts", None):
+            self._reposition_toasts()
 
     # ===== 文本清洗 =====
 
@@ -1959,15 +2048,8 @@ class MainWindow(QMainWindow):
         sb.setValue(sb.maximum())
 
     def _set_clean_buttons_enabled(self, enabled: bool):
-        self.suoshu_btn.setEnabled(enabled)
-        self.punct_btn.setEnabled(enabled)
-        self.orphan_btn.setEnabled(enabled)
-        self.typo_check_btn.setEnabled(enabled)
-        self.dup_check_btn.setEnabled(enabled)
-        # 应用按钮：恢复时仅在当前显示的检查列表非空时点亮
-        if enabled:
-            active = self._active_cache_list() if hasattr(self, "_current_check_kind") else []
-            self.typo_apply_btn.setEnabled(bool(active))
+        """设置清洗操作按钮状态（与标注组互锁，见 _set_doc_ops_enabled）"""
+        self._set_doc_ops_enabled(enabled)
 
     def _start_clean_worker(self, action: str, log_prefix: str, history_label: str = None, **kwargs):
         """通用：启动 CleanWorker
@@ -1975,6 +2057,9 @@ class MainWindow(QMainWindow):
         """
         if not self.doc_data:
             self._show_toast("请先加载文档！", "error")
+            return
+        if self._is_busy():
+            self._show_toast("正在处理中，请等待当前操作完成", "warning")
             return
         self._set_clean_buttons_enabled(False)
         self.progress_bar.setVisible(True)
@@ -2093,8 +2178,6 @@ class MainWindow(QMainWindow):
             wrong = item.get("wrong", "")
             if not (wrong and confirmed) or confirmed == wrong:
                 continue
-            if item.get("_ignored"):
-                continue
             corrections.append({
                 "para_idx": item["para_idx"],
                 "wrong": wrong,
@@ -2154,11 +2237,28 @@ class MainWindow(QMainWindow):
             return context
         return f"{context[:idx]}【{context[idx:idx + len(wrong)]}】{context[idx + len(wrong):]}"
 
+    def _fg(self, light_hex: str, dark_hex: str) -> QColor:
+        """按当前主题返回表格前景色（深色主题需要更亮的色调保证对比度）"""
+        return QColor(dark_hex if self.current_theme == "dark" else light_hex)
+
     def _render_table_from_data(self, results: list):
         """把缓存列表渲染到共用表格"""
+        # 批量渲染：一次分配全部行 + 暂停重绘，避免大结果集逐行 insertRow 卡顿
+        self.typo_table.setUpdatesEnabled(False)
+        try:
+            self._fill_typo_table(results)
+        finally:
+            self.typo_table.setUpdatesEnabled(True)
+
+        # 计数标签 + 应用按钮启用状态
+        kind_text = "错别字" if self._current_check_kind == "typo" else "重复字词"
+        self.typo_count_label.setText(f"  当前显示：{kind_text}  ·  共 {len(results)} 处")
+        self.typo_apply_btn.setEnabled(len(results) > 0)
+
+    def _fill_typo_table(self, results: list):
         self.typo_table.setRowCount(0)
+        self.typo_table.setRowCount(len(results))
         for row_idx, item in enumerate(results):
-            self.typo_table.insertRow(row_idx)
 
             # 列0：章节名（para_idx 存 UserRole）
             section_text = item.get("section") or "（未归类）"
@@ -2177,7 +2277,7 @@ class MainWindow(QMainWindow):
             # 列2：修改前（只读，显示原始错词）
             wrong_item = QTableWidgetItem(item.get("wrong", ""))
             wrong_item.setFlags(wrong_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
-            wrong_item.setForeground(QColor("#c62828"))
+            wrong_item.setForeground(self._fg("#c62828", "#ff7b72"))
             self.typo_table.setItem(row_idx, 2, wrong_item)
 
             # 列3：修改后（可编辑）
@@ -2192,17 +2292,12 @@ class MainWindow(QMainWindow):
             ig_item.setTextAlignment(
                 Qt.AlignmentFlag.AlignCenter | Qt.AlignmentFlag.AlignVCenter
             )
-            ig_item.setForeground(QColor("#00897b"))
+            ig_item.setForeground(self._fg("#00897b", "#4dd0c4"))
             ig_font = QFont()
             ig_font.setBold(True)
             ig_item.setFont(ig_font)
             ig_item.setToolTip("点击忽略此条")
             self.typo_table.setItem(row_idx, 4, ig_item)
-
-        # 计数标签 + 应用按钮启用状态
-        kind_text = "错别字" if self._current_check_kind == "typo" else "重复字词"
-        self.typo_count_label.setText(f"  当前显示：{kind_text}  ·  共 {len(results)} 处")
-        self.typo_apply_btn.setEnabled(len(results) > 0)
 
     def _on_clean_finished(self, message: str):
         """清洗操作完成"""
@@ -2449,7 +2544,7 @@ class MainWindow(QMainWindow):
             ig_item.setTextAlignment(
                 Qt.AlignmentFlag.AlignCenter | Qt.AlignmentFlag.AlignVCenter
             )
-            ig_item.setForeground(QColor("#00897b"))
+            ig_item.setForeground(self._fg("#00897b", "#4dd0c4"))
             ig_font = QFont()
             ig_font.setBold(True)
             ig_item.setFont(ig_font)

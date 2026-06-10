@@ -172,7 +172,7 @@ def _is_paragraph_already_annotated(text: str, marks: dict[int, str], mode: str)
             if re.search(re.escape(name) + r'[（(]\s*' + str(num) + r'\s*[）)]', text):
                 return True
         else:
-            if re.escape(name) + str(num) in text:
+            if name + str(num) in text:
                 return True
     return False
 

@@ -6,10 +6,27 @@ config_manager.py — 软件配置与用户词库持久化管理
 """
 import json
 import os
+import tempfile
 from PyQt6.QtCore import QSettings, QStandardPaths
 
 ORG_NAME = "PatentMarker"
 APP_NAME = "MarkAssistant"
+
+
+def _atomic_write_json(path: str, data) -> None:
+    """先写同目录临时文件再 os.replace，避免进程中断时词库文件被截断损坏。"""
+    dir_name = os.path.dirname(path) or "."
+    fd, tmp_path = tempfile.mkstemp(suffix=".tmp", dir=dir_name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+        os.replace(tmp_path, path)
+    except BaseException:
+        try:
+            os.remove(tmp_path)
+        except OSError:
+            pass
+        raise
 
 
 def get_config_dir() -> str:
@@ -100,7 +117,8 @@ class AppSettings:
 # ─────────────────────────────────────────
 
 def load_user_wordbank() -> list:
-    """读取用户自定义错别字词库 JSON。文件不存在时返回空列表。"""
+    """读取用户自定义错别字词库 JSON。文件不存在时返回空列表。
+    按 wrong 去重（保留首条），避免手工编辑出的重复条目导致同一处错字报多条。"""
     path = get_wordbank_path()
     if not os.path.exists(path):
         return []
@@ -108,12 +126,17 @@ def load_user_wordbank() -> list:
         with open(path, "r", encoding="utf-8") as f:
             data = json.load(f)
         if isinstance(data, list):
-            # 校验每项的格式
-            return [
-                {"wrong": str(x.get("wrong", "")), "suggestion": str(x.get("suggestion", ""))}
-                for x in data
-                if isinstance(x, dict) and x.get("wrong")
-            ]
+            seen = set()
+            result = []
+            for x in data:
+                if not (isinstance(x, dict) and x.get("wrong")):
+                    continue
+                wrong = str(x.get("wrong", ""))
+                if wrong in seen:
+                    continue
+                seen.add(wrong)
+                result.append({"wrong": wrong, "suggestion": str(x.get("suggestion", ""))})
+            return result
     except Exception:
         return []
     return []
@@ -127,8 +150,7 @@ def save_user_wordbank(entries: list):
         for e in entries
         if e.get("wrong") and e.get("suggestion")
     ]
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(cleaned, f, ensure_ascii=False, indent=2)
+    _atomic_write_json(path, cleaned)
 
 
 def load_disabled_builtin_wrongs() -> set:
@@ -150,8 +172,7 @@ def save_disabled_builtin_wrongs(wrongs) -> None:
     """保存被用户禁用的内置词库 wrong 列表"""
     path = get_disabled_builtin_path()
     cleaned = sorted({str(w) for w in wrongs if w})
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(cleaned, f, ensure_ascii=False, indent=2)
+    _atomic_write_json(path, cleaned)
 
 
 def load_dup_ignore_list() -> list:
@@ -186,8 +207,7 @@ def save_dup_ignore_list(items) -> None:
         if s and s not in seen:
             seen.add(s)
             cleaned.append(s)
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(cleaned, f, ensure_ascii=False, indent=2)
+    _atomic_write_json(path, cleaned)
 
 
 def load_vague_wordbank() -> list:
@@ -234,8 +254,7 @@ def save_vague_wordbank(items) -> None:
         if s and s not in seen:
             seen.add(s)
             cleaned.append(s)
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(cleaned, f, ensure_ascii=False, indent=2)
+    _atomic_write_json(path, cleaned)
 
 
 def get_builtin_vague_wordbank() -> list:
@@ -288,8 +307,7 @@ def save_boundary_blacklist(items) -> None:
         if s and s not in seen:
             seen.add(s)
             cleaned.append(s)
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(cleaned, f, ensure_ascii=False, indent=2)
+    _atomic_write_json(path, cleaned)
 
 
 def get_builtin_boundary_blacklist() -> list:
@@ -314,4 +332,13 @@ def get_merged_wordbank() -> list:
         e for e in BUILTIN
         if e["wrong"] not in user_wrongs and e["wrong"] not in disabled
     ] + user
-    return merged
+    # 兜底去重（保留首条）：内置或用户来源的重复 wrong 都会让
+    # 同一处错字报多条
+    seen = set()
+    deduped = []
+    for e in merged:
+        if e["wrong"] in seen:
+            continue
+        seen.add(e["wrong"])
+        deduped.append(e)
+    return deduped

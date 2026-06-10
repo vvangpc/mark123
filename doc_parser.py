@@ -47,24 +47,30 @@ def is_section_title(paragraph, keywords: list[str]) -> bool:
 
     for kw in keywords:
         clean_kw = re.sub(r'\s+', '', kw)
-        
+
         # 1. 完全匹配
         if clean_text == clean_kw:
             return True
-        
+
+        # 「摘要附图」标题只允许被「摘要附图」关键词命中——
+        # 否则会先被排在前面的「说明书摘要」（kw 含"摘要"）经下方的
+        # 前缀/加粗条件吃掉，导致"摘要附图"章节永远建不出来
+        if clean_text.startswith("摘要附图") and clean_kw != "摘要附图":
+            continue
+
         # 2. 匹配带中英文冒号的情况 (如 "摘要：" 或 "摘要:")
         if clean_text == f"{clean_kw}：" or clean_text == f"{clean_kw}:":
             return True
-            
+
         # 3. 字体加粗匹配 (如果首个Run是加粗的，且文本以关键词开头)
         # 例如："说明书附图如下" 如果加粗了也可以算
         if clean_text.startswith(clean_kw) and paragraph.runs:
             first_run = paragraph.runs[0]
             if first_run.font and first_run.font.bold:
                 return True
-                
-        # 4. 如果是找摘要，单独给个直接识别前缀为“摘要”但紧跟附图或冒号的条件
-        if "摘要" in clean_kw and (clean_text.startswith("摘要附图") or clean_text.startswith("摘要:")):
+
+        # 4. 如果是找摘要，单独给个直接识别前缀为“摘要”但紧跟冒号的条件
+        if "摘要" in clean_kw and (clean_text.startswith("摘要:") or clean_text.startswith("摘要：")):
              return True
 
     return False
@@ -321,8 +327,10 @@ def parse_document(doc_path: str) -> dict:
 
         # 对于权利要求书，起始段落就是内容段落（可能没有单独标题）
         if name == "权利要求书":
-            # 检查当前段落是否是"权利要求书"标题（纯标题文字）
-            if paragraphs[pos].text.strip() == "权利要求书":
+            # 检查当前段落是否是"权利要求书"标题（容忍内部空格与尾部冒号，
+            # 如「权 利 要 求 书」「权利要求书：」）
+            title_text = re.sub(r'\s+', '', paragraphs[pos].text).rstrip("：:")
+            if title_text == "权利要求书":
                 content_start = pos + 1
             else:
                 content_start = pos

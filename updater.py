@@ -3,7 +3,7 @@
 updater.py — 客户端自动更新
 
 工作流：
-  1. 启动 1.5 秒后后台线程 GET PRIMARY_URL（VPS）→ 失败 fallback FALLBACK_URL（GitHub Releases）
+  1. 启动 1.5 秒后后台线程 GET FALLBACK_URL（GitHub HTTPS）→ 失败 fallback PRIMARY_URL（VPS HTTP）
   2. 拿到 latest.json，与本地 __version__ 比较；新版 → 主线程弹窗
   3. 用户确认 → 下载 Inno 安装包到 %TEMP% → SHA256 校验 → ShellExecute 启动 → 当前 app 退出
 
@@ -34,13 +34,14 @@ from PyQt6.QtCore import QObject, QSettings, Qt, pyqtSignal
 from PyQt6.QtWidgets import QMessageBox, QProgressDialog, QWidget, QApplication
 
 # ─────────────────────── 配置 ───────────────────────
-# 主源：VPS 直连 IP —— CN 用户访问速度比 GitHub 快得多
-# 用 HTTP 是因为 IP 没法签 Let's Encrypt 证书；安全性靠 latest.json 里的 sha256：
-# 即使 .exe 下载被中间人篡改，updater.py 会校验 hash 失败而拒绝安装
+# 元数据 (latest.json) 优先走 GitHub HTTPS（见 _fetch_latest）：
+# latest.json 含下载 URL + sha256，若走 HTTP 可被中间人连哈希一起替换。
+# VPS HTTP 源仅在 GitHub 不可达时兜底；下载 exe 仍优先走 VPS 提速，
+# 安全性由 HTTPS 元数据中的 sha256 强制校验保证。
 # 注：URL 不带 /mark123/ 前缀，因为 nginx 的 root 已经设到 /var/www/mark123
 PRIMARY_URL = "http://107.172.180.160/latest.json"
 
-# 备源：GitHub Releases 的 "latest" 别名（HTTPS）—— VPS 挂了 / 中国封 IP 时兜底
+# GitHub Releases 的 "latest" 别名（HTTPS）
 GITHUB_REPO = "vvangpc/mark123"
 FALLBACK_URL = f"https://github.com/{GITHUB_REPO}/releases/latest/download/latest.json"
 
@@ -120,8 +121,14 @@ class _CheckWorker(QObject):
 
 
 def _fetch_latest() -> Optional[UpdateInfo]:
-    """先试 PRIMARY_URL，失败 fallback GitHub。任何异常都吞掉返回 None。"""
-    for url in (PRIMARY_URL, FALLBACK_URL):
+    """元数据优先走 GitHub（HTTPS），VPS（HTTP）只做兜底。
+
+    latest.json 里包含下载 URL 和 sha256 —— 若元数据本身走 HTTP，
+    中间人可以同时替换下载链和哈希值，校验就形同虚设。
+    HTTPS 元数据 + 强制 sha256 校验后，下载 exe 仍可走 HTTP VPS 提速。
+    任何异常都吞掉返回 None。
+    """
+    for url in (FALLBACK_URL, PRIMARY_URL):
         try:
             req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
             with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT) as resp:
@@ -225,6 +232,15 @@ def _download_and_launch(parent: QWidget, info: UpdateInfo) -> None:
         )
         return
 
+    # 强制校验：sha256 缺失时拒绝自动安装（否则 HTTP 下载体无从验证）
+    if not info.sha256:
+        QMessageBox.warning(
+            parent, "无法自动更新",
+            f"V{info.version} 的更新信息缺少 SHA256 校验值，已取消自动安装。\n"
+            f"请到以下地址手动下载：\n{info.url_github or info.url}"
+        )
+        return
+
     target = os.path.join(
         tempfile.gettempdir(), f"专利标记助手V{info.version}-安装版.exe"
     )
@@ -239,10 +255,10 @@ def _download_and_launch(parent: QWidget, info: UpdateInfo) -> None:
     progress.setAutoReset(False)
     progress.show()
 
-    sha = hashlib.sha256()
-    bytes_done = 0
     total = info.size or 0
     cancelled = False
+    sha = hashlib.sha256()
+    bytes_done = 0
 
     # 优先 url（latest.json 里写的主下载源），失败 fallback url_github；去重避免重试同一个地址
     seen: set = set()
@@ -256,6 +272,10 @@ def _download_and_launch(parent: QWidget, info: UpdateInfo) -> None:
 
     for url in urls:
         try:
+            # 每个下载源都从零开始：换源重试时必须重置哈希与进度，
+            # 否则上一次半截下载的字节会混进 sha，校验必然失败
+            sha = hashlib.sha256()
+            bytes_done = 0
             req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
             with urllib.request.urlopen(req, timeout=DOWNLOAD_TIMEOUT) as resp:
                 # 服务器没给 size 的话用 Content-Length 兜底
@@ -307,21 +327,20 @@ def _download_and_launch(parent: QWidget, info: UpdateInfo) -> None:
             pass
         return
 
-    # SHA256 校验
-    if info.sha256:
-        digest = sha.hexdigest().lower()
-        if digest != info.sha256:
-            QMessageBox.critical(
-                parent, "更新包校验失败",
-                f"SHA256 不匹配，可能下载被中间人篡改或服务器文件损坏。\n"
-                f"预期: {info.sha256}\n实际: {digest}\n\n"
-                f"已删除可疑文件，请稍后重试。"
-            )
-            try:
-                os.remove(target)
-            except OSError:
-                pass
-            return
+    # SHA256 校验（sha256 缺失的更新在下载前已被拒绝，此处必然有值）
+    digest = sha.hexdigest().lower()
+    if digest != info.sha256:
+        QMessageBox.critical(
+            parent, "更新包校验失败",
+            f"SHA256 不匹配，可能下载被中间人篡改或服务器文件损坏。\n"
+            f"预期: {info.sha256}\n实际: {digest}\n\n"
+            f"已删除可疑文件，请稍后重试。"
+        )
+        try:
+            os.remove(target)
+        except OSError:
+            pass
+        return
 
     # 拉起安装程序后立即退出当前进程，让 Inno 覆盖文件
     try:

@@ -94,13 +94,15 @@ class ClaimInfo:
 # ─────────────────────────────────────────
 _CLAIM_HEAD_RE = re.compile(r'^\s*(\d+)\s*[\.\．\、]\s*')
 # 匹配"根据权利要求X所述" / "如权利要求X所述" / "按照权利要求X所述" 等
-# 捕获紧跟的编号串（允许 "1", "1、2", "1或2", "1-3" 等）
+# 捕获紧跟的编号串（允许 "1", "1、2", "1或2", "1-3", "1或权利要求2" 等；
+# 分隔符后允许重复出现"权利要求"字样，使"权利要求1或权利要求2所述"
+# 解析为一个引用组——否则会拆成两个 single 组，多项引用规则全部失效）
 _CITE_RE = re.compile(
     r'(?:根据|如|按照|依据)?权利要求\s*'
-    r'([0-9０-９]+(?:\s*(?:[,，、和或至\-－~～]|到|或者)\s*[0-9０-９]+)*)'
+    r'([0-9０-９]+(?:\s*(?:[,，、和或至\-－~～]|到|或者)\s*(?:权利要求)?\s*[0-9０-９]+)*)'
     r'\s*中?\s*(?:任(?:意)?一?项?)?\s*所述'
 )
-_RANGE_RE = re.compile(r'\s*(\d+)\s*(?:[-－~～]|至|到)\s*(\d+)')
+_RANGE_RE = re.compile(r'(\d+)\s*(?:[-－~～]|至|到)\s*(\d+)')
 _NUM_RE = re.compile(r'\d+')
 _SUOSHU_RE = re.compile(r'所述')
 
@@ -122,8 +124,12 @@ def _norm_digits(s: str) -> str:
 
 def _extract_cite_nums(num_str: str) -> tuple:
     """
-    从形如 "1、2" / "1或2" / "1至3" 的字符串里提取出整数集合与模式。
+    从形如 "1、2" / "1或2" / "1至3" / "1、3-5" / "1至3或5" 的字符串里
+    提取出整数集合与模式。
     返回 (nums: set[int], mode: 'or'/'and'/'range'/'single')
+
+    范围区段（a至b / a-b）无论与何种连接词混用都会展开为完整区间，
+    避免 "1、3-5" 只取到 {1,3,5} 漏掉 4。
     """
     s = _norm_digits(num_str)
     mode = "single"
@@ -133,30 +139,29 @@ def _extract_cite_nums(num_str: str) -> tuple:
         mode = "and"
     elif "-" in s or "－" in s or "~" in s or "～" in s or "至" in s or "到" in s:
         mode = "range"
-    # 处理范围
     nums = set()
-    if mode == "range":
-        m = _RANGE_RE.match(s)
-        if m:
-            a, b = int(m.group(1)), int(m.group(2))
-            if a <= b:
-                nums.update(range(a, b + 1))
-            else:
-                nums.update(range(b, a + 1))
-            return nums, mode
-    # 通用：抓所有数字
+    # 先展开所有 "a至b" / "a-b" 范围区段（与 mode 无关）
+    for m in _RANGE_RE.finditer(s):
+        a, b = int(m.group(1)), int(m.group(2))
+        lo, hi = (a, b) if a <= b else (b, a)
+        nums.update(range(lo, hi + 1))
+    # 再补散号（范围端点重复加入 set，无害）
     for m in _NUM_RE.finditer(s):
         nums.add(int(m.group(0)))
     return nums, mode
 
 
-def parse_claims(paragraphs, start_idx: int, end_idx: int) -> dict:
+def parse_claims_ex(paragraphs, start_idx: int, end_idx: int) -> tuple:
     """
     从全文 paragraphs 的 [start_idx, end_idx) 区间中解析权利要求。
 
-    返回: {claim_no(int): ClaimInfo}
+    返回: (claims, duplicates)
+        claims:     {claim_no(int): ClaimInfo}（重号时保留首次出现的权项）
+        duplicates: [{"no": int, "para_idx": int, "context": str}]
+                    —— 序号与已有权项重复的后续权项
     """
     claims: dict = {}
+    duplicates: list = []
     current_no = None
     current_paras: list = []
     current_lines: list = []
@@ -166,6 +171,18 @@ def parse_claims(paragraphs, start_idx: int, end_idx: int) -> dict:
         if current_no is None:
             return
         raw = "\n".join(current_lines).strip()
+        # 重号：dict 直接赋值会静默覆盖前一条，导致重号查不出来；
+        # 这里保留首条，把后续同号权项记入 duplicates 供编号检查上报
+        if current_no in claims:
+            duplicates.append({
+                "no": current_no,
+                "para_idx": current_paras[0] if current_paras else -1,
+                "context": raw.replace("\n", " ")[:30],
+            })
+            current_no = None
+            current_paras = []
+            current_lines = []
+            return
         # 去掉开头 "1." / "1、"
         stripped = _CLAIM_HEAD_RE.sub("", raw, count=1)
         info = ClaimInfo(
@@ -216,6 +233,12 @@ def parse_claims(paragraphs, start_idx: int, end_idx: int) -> dict:
                 current_paras.append(i)
                 current_lines.append(text)
     _flush()
+    return claims, duplicates
+
+
+def parse_claims(paragraphs, start_idx: int, end_idx: int) -> dict:
+    """兼容包装：只返回 {claim_no: ClaimInfo}（重号检测请用 parse_claims_ex）。"""
+    claims, _ = parse_claims_ex(paragraphs, start_idx, end_idx)
     return claims
 
 
@@ -253,25 +276,59 @@ def check_claim_dependency(claims: dict) -> list:
 # ─────────────────────────────────────────
 def check_multi_dependency(claims: dict) -> list:
     """
-    常见规则：
-      - 多项引用只能用"或"，不能用"和/及/与"来并列（因为"和"会被解读为同时满足）
-      - "权利要求1-3任一项所述" 合法；"权利要求1和2所述" 不合法
+    多项引用合法性检查：
+      1. 多项引用只能用"或"，不能用"和/及/与"来并列（"和"会被解读为同时满足）；
+         "权利要求1-3任一项所述" 合法；"权利要求1和2所述" 不合法
+      2. 多引多（实施细则 22.2）：多项引用权利要求不得作为另一项
+         多项引用权利要求的引用基础
+      3. 多项引用建议写明「中任一项」，否则保护范围表述不清，常被审查员指出
     """
     results = []
+    # 多项引用权项集合：任一引用组包含 2 个以上编号即视为多项引用权利要求
+    multi_dep_nos = {
+        no for no, info in claims.items()
+        if any(len(grp["nums"]) > 1 for grp in info.cite_groups)
+    }
     for no in sorted(claims.keys()):
         info = claims[no]
         for grp in info.cite_groups:
             if len(grp["nums"]) <= 1:
                 continue
+            para_idx = info.para_indices[0] if info.para_indices else -1
             mode = grp["mode"]
             if mode == "and":
                 results.append({
                     "kind": "multi_dep",
                     "claim_no": no,
-                    "para_idx": info.para_indices[0] if info.para_indices else -1,
+                    "para_idx": para_idx,
                     "context": grp["raw"],
                     "message": f"权利要求 {no} 的多项引用使用了'和/、'连接，应改为'或'",
                     "suggestion": grp["raw"].replace("和", "或").replace("、", "或"),
+                })
+            elif "任一" not in grp["raw"] and "任意" not in grp["raw"]:
+                # 多项引用缺「任一项」（and 模式已在上面单独报，不重复提示）
+                results.append({
+                    "kind": "multi_dep",
+                    "claim_no": no,
+                    "para_idx": para_idx,
+                    "context": grp["raw"],
+                    "message": f"权利要求 {no} 的多项引用未写明『中任一项』，保护范围表述不清",
+                    "suggestion": grp["raw"].replace("所述", "中任一项所述", 1),
+                })
+            # 多引多：本组引用的权项中存在另一个多项引用权项
+            hit_multi = sorted(grp["nums"] & multi_dep_nos)
+            if hit_multi:
+                hit_str = "、".join(str(x) for x in hit_multi)
+                results.append({
+                    "kind": "multi_dep",
+                    "claim_no": no,
+                    "para_idx": para_idx,
+                    "context": grp["raw"],
+                    "message": (
+                        f"权利要求 {no} 多项引用了多项引用权利要求 {hit_str}"
+                        f"（多引多，不符合专利法实施细则第 22 条第 2 款）"
+                    ),
+                    "suggestion": "改写被引权项为单项引用，或拆分本权项的引用关系",
                 })
     return results
 
@@ -691,7 +748,7 @@ def check_antecedent_basis(claims: dict, n: int, ignore_set: set,
 # 检查 6: 同一术语多种写法
 # ─────────────────────────────────────────
 def _similar(a: str, b: str) -> bool:
-    """简易相似：长度相同且仅 1 字不同；或其中一个是另一个的包含串。"""
+    """简易相似：长度相同且仅 1 字不同。"""
     if a == b:
         return False
     if len(a) == len(b):
@@ -828,11 +885,33 @@ def run_all_checks(paragraphs, start_idx: int, end_idx: int,
         use_dynamic_truncate / use_dynamic_fallback / boundary_blacklist:
                       引用基础检查的两个降噪开关，详见 check_antecedent_basis
     """
-    claims = parse_claims(paragraphs, start_idx, end_idx)
+    claims, duplicates = parse_claims_ex(paragraphs, start_idx, end_idx)
     if not claims:
         return []
 
     results = []
+    # 重号权项（如出现两个 "3."）
+    for dup in duplicates:
+        results.append({
+            "kind": "numbering",
+            "claim_no": dup["no"],
+            "para_idx": dup["para_idx"],
+            "context": dup["context"],
+            "message": f"权利要求 {dup['no']} 出现多次（序号重复）",
+            "suggestion": "重新编号，保证权项序号从 1 开始连续且不重复",
+        })
+    # 无独立权利要求：所有权项都引用了其它权项
+    if all(info.cites for info in claims.values()):
+        first_no = min(claims.keys())
+        first_info = claims[first_no]
+        results.append({
+            "kind": "numbering",
+            "claim_no": None,
+            "para_idx": first_info.para_indices[0] if first_info.para_indices else -1,
+            "context": "、".join(str(x) for x in sorted(claims.keys())),
+            "message": "未发现独立权利要求（所有权项均引用其它权项）",
+            "suggestion": "检查权利要求 1 是否误写了引用语，独立权项不应含『根据权利要求N所述』",
+        })
     results.extend(check_claim_dependency(claims))
     results.extend(check_multi_dependency(claims))
     results.extend(check_claim_numbering(claims))
