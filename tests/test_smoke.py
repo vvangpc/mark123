@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
 """
 test_smoke.py — 主窗口冒烟测试
-不依赖真实 docx 文件，仅验证主窗口可正常启动、4 个 Tab 均构建成功、
-核心 worker 类可从 workers 模块正常导入。用于重构过程中的快速回归。
+不依赖真实 docx 文件，仅验证主窗口可正常启动、三区骨架（常驻内容区 +
+模块面板栈 + 模块切换竖条）均构建成功、核心 worker 类可正常导入。用于重构过程中的快速回归。
 
 运行：
     python tests/test_smoke.py
@@ -31,10 +31,12 @@ def test_main_window_construct():
     app = QApplication.instance() or QApplication(sys.argv)
     win = MainWindow()
 
-    # 4 个 Tab 存在
-    assert hasattr(win, "tab_widget"), "MainWindow 应有 tab_widget 属性"
-    tab_count = win.tab_widget.count()
-    assert tab_count >= 4, f"预期至少 4 个 Tab，实际 {tab_count}"
+    # 三区骨架：常驻内容区(4 标签页) + 模块面板栈(4 页) + 模块切换竖条
+    assert hasattr(win, "content_area"), "应有左上常驻内容区 content_area"
+    assert win.content_area.tabs.count() == 4, "内容区应有 4 个标签页"
+    assert hasattr(win, "panel_stack"), "应有左下模块面板栈 panel_stack"
+    assert win.panel_stack.count() == 4, f"预期 4 个模块面板，实际 {win.panel_stack.count()}"
+    assert hasattr(win, "activity_bar"), "应有右侧模块切换竖条 activity_bar"
 
     # 初始状态
     assert win.doc_data is None
@@ -45,7 +47,7 @@ def test_main_window_construct():
         assert hasattr(win, attr), f"MainWindow 缺少属性 {attr}"
 
     win.close()
-    print(f"[OK] MainWindow constructed ({tab_count} tabs)")
+    print(f"[OK] MainWindow constructed (3-pane: content + {win.panel_stack.count()} panels + activity bar)")
 
 
 def test_load_sample_docx():

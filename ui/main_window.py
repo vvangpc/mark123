@@ -8,7 +8,7 @@ import traceback
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
     QLabel, QTextEdit, QPlainTextEdit, QFileDialog, QMessageBox,
-    QStatusBar, QProgressBar, QFrame, QSplitter, QTabWidget,
+    QStatusBar, QProgressBar, QFrame, QSplitter, QTabWidget, QStackedWidget,
     QGroupBox, QApplication, QCheckBox, QDialog, QSpinBox, QAbstractSpinBox,
     QButtonGroup, QTableWidget, QTableWidgetItem, QHeaderView,
     QLineEdit, QMenu, QSizePolicy,
@@ -18,10 +18,12 @@ from PyQt6.QtGui import (
     QDragEnterEvent, QDropEvent, QTextCursor, QTextCharFormat, QColor, QFont,
 )
 
-from core.doc_parser import parse_document, get_section_text
+from core.doc_parser import parse_document
 from core.mark_extractor import extract_marks_from_paragraph, extract_marks_from_paragraphs, marks_to_display_text, parse_marks_from_display_text
 from core.annotator import smart_annotate_section, smart_remove_section
 from ui.styles import DARK_THEME_QSS, LIGHT_THEME_QSS
+from ui.content_area import ContentArea
+from ui.activity_bar import ActivityBar
 from core.cleaner import (
     remove_suoshu, unify_halfwidth_punct, convert_fullwidth_to_halfwidth,
     detect_orphan_marks,
@@ -410,31 +412,42 @@ class MainWindow(QMainWindow):
         header = self._create_header()
         main_layout.addWidget(header)
 
-        # ===== 中间区域：标签页 =====
-        self.tab_widget = QTabWidget()
-        self.tab_widget.setObjectName("mainTabs")
+        # ===== 中间区域：三区布局 =====
+        #   左上：常驻内容区（4 标签页）   左下：当前模块面板（QStackedWidget）
+        #   右侧：模块切换竖条（ActivityBar）
+        body = QHBoxLayout()
+        body.setSpacing(10)
 
-        # 标签页1: 标记与标注
-        tab1 = self._create_mark_tab()
-        self.tab_widget.addTab(tab1, "📌 标记提取与标注")
+        left_split = QSplitter(Qt.Orientation.Vertical)
+        left_split.setObjectName("mainSplit")
 
-        # 标签页2: 文档预览
-        tab2 = self._create_preview_tab()
-        self.tab_widget.addTab(tab2, "📄 文档内容预览")
+        # 左上：专利内容常驻区
+        self.content_area = ContentArea()
+        left_split.addWidget(self.content_area)
 
-        # 标签页3: 文本清洗
-        tab3 = self._create_clean_tab()
-        self.tab_widget.addTab(tab3, "🧹 文本清洗")
+        # 左下：各模块操作 / 结果面板（顺序须与 ActivityBar 一致）
+        self.panel_stack = QStackedWidget()
+        self.panel_stack.addWidget(self._create_mark_tab())          # 0 标记提取与标注
+        self.panel_stack.addWidget(self._create_clean_tab())         # 1 文本清洗
+        self.panel_stack.addWidget(self._create_typo_tab())          # 2 错别字 / 重复字
+        self.panel_stack.addWidget(self._create_claim_check_tab())   # 3 权利要求书检查
+        left_split.addWidget(self.panel_stack)
+        left_split.setStretchFactor(0, 3)
+        left_split.setStretchFactor(1, 2)
+        left_split.setSizes([440, 320])
+        body.addWidget(left_split, 1)
 
-        # 标签页4: 错别字检查
-        tab4 = self._create_typo_tab()
-        self.tab_widget.addTab(tab4, "📝 错别字检查")
+        # 右侧：模块切换竖条
+        self.activity_bar = ActivityBar([
+            ("📌", "标记"),
+            ("🧹", "清洗"),
+            ("📝", "错别字"),
+            ("⚖️", "权项"),
+        ])
+        self.activity_bar.switched.connect(self.panel_stack.setCurrentIndex)
+        body.addWidget(self.activity_bar)
 
-        # 标签页5: 权利要求书检查（引用基础 / 引用关系 / 不确定用语）
-        tab5 = self._create_claim_check_tab()
-        self.tab_widget.addTab(tab5, "⚖️ 权利要求书检查")
-
-        main_layout.addWidget(self.tab_widget, 1)
+        main_layout.addLayout(body, 1)
 
         # ===== 底部：状态栏 =====
         self.status_bar = QStatusBar()
@@ -624,57 +637,6 @@ class MainWindow(QMainWindow):
 
         bottom_splitter.setSizes([500, 400])
         layout.addWidget(bottom_splitter, 1)
-
-        return widget
-
-    def _create_preview_tab(self) -> QWidget:
-        """创建文档内容预览标签页"""
-        widget = QWidget()
-        layout = QVBoxLayout(widget)
-        layout.setContentsMargins(0, 8, 0, 0)
-
-        # 使用分割器
-        splitter = QSplitter(Qt.Orientation.Horizontal)
-
-        # 左侧: 章节列表
-        sections_panel = QFrame()
-        sections_panel.setObjectName("glassPanel")
-        sections_layout = QVBoxLayout(sections_panel)
-
-        sections_title = QLabel("📑 文档章节")
-        sections_title.setObjectName("sectionLabel")
-        sections_layout.addWidget(sections_title)
-
-        # 章节按钮容器
-        self.section_buttons_layout = QVBoxLayout()
-        sections_layout.addLayout(self.section_buttons_layout)
-        sections_layout.addStretch()
-
-        splitter.addWidget(sections_panel)
-
-        # 右侧: 内容预览
-        preview_panel = QFrame()
-        preview_panel.setObjectName("glassPanel")
-        preview_layout = QVBoxLayout(preview_panel)
-
-        preview_title_row = QHBoxLayout()
-        self.preview_title = QLabel("📄 内容预览")
-        self.preview_title.setObjectName("sectionLabel")
-        preview_title_row.addWidget(self.preview_title)
-        preview_title_row.addStretch()
-        preview_layout.addLayout(preview_title_row)
-
-        self.preview_text = QTextEdit()
-        self.preview_text.setReadOnly(True)
-        self.preview_text.setPlaceholderText("选择左侧章节查看内容...")
-        preview_layout.addWidget(self.preview_text)
-
-        splitter.addWidget(preview_panel)
-
-        # 设置分割比例
-        splitter.setSizes([220, 800])
-
-        layout.addWidget(splitter)
 
         return widget
 
@@ -1323,8 +1285,8 @@ class MainWindow(QMainWindow):
             self.progress_bar.setValue(80)
             QApplication.processEvents()
 
-            # 更新章节预览
-            self._update_section_buttons()
+            # 填充左上常驻内容区
+            self.content_area.load(self.doc_data)
 
             # 更新清洗Tab的章节勾选框
             self._update_suoshu_section_checkboxes(self.doc_data['sections'])
@@ -1806,11 +1768,6 @@ class MainWindow(QMainWindow):
         # 权要 Tab
         self.claim_check_btn.setEnabled(enabled and self._claim_loaded)
         self.claim_confirm_btn.setEnabled(enabled and self._claim_dirty)
-        # 章节预览按钮
-        for i in range(self.section_buttons_layout.count()):
-            w = self.section_buttons_layout.itemAt(i).widget()
-            if w is not None:
-                w.setEnabled(enabled)
         # generate_btn 仅在有历史时启用
         self.generate_btn.setEnabled(enabled and bool(self.history_entries))
 
@@ -1905,42 +1862,6 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
         super().closeEvent(event)
-
-    def _update_section_buttons(self):
-        """更新章节列表按钮"""
-        # 清空现有按钮
-        while self.section_buttons_layout.count():
-            item = self.section_buttons_layout.takeAt(0)
-            if item.widget():
-                item.widget().deleteLater()
-
-        if not self.doc_data:
-            return
-
-        sections = self.doc_data['sections']
-        for name, section in sections.items():
-            para_count = section.end_idx - section.start_idx
-            btn = QPushButton(f"  {name}  ({para_count}段)")
-            btn.setObjectName("smallBtn")
-            btn.setCursor(Qt.CursorShape.PointingHandCursor)
-            btn.clicked.connect(lambda checked, n=name: self._preview_section(n))
-            self.section_buttons_layout.addWidget(btn)
-
-    def _preview_section(self, section_name: str):
-        """预览指定章节内容"""
-        if not self.doc_data:
-            return
-
-        sections = self.doc_data['sections']
-        if section_name not in sections:
-            return
-
-        section = sections[section_name]
-        paragraphs = self.doc_data['paragraphs']
-        text = get_section_text(paragraphs, section)
-
-        self.preview_title.setText(f"📄 {section_name}")
-        self.preview_text.setPlainText(text)
 
     def _log(self, message: str):
         """添加日志"""
