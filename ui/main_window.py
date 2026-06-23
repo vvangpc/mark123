@@ -432,12 +432,16 @@ class MainWindow(QMainWindow):
         self.panel_stack.addWidget(self._create_typo_tab())          # 2 错别字 / 重复字
         self.panel_stack.addWidget(self._create_claim_check_tab())   # 3 权利要求书检查
         left_split.addWidget(self.panel_stack)
-        left_split.setStretchFactor(0, 3)
-        left_split.setStretchFactor(1, 2)
-        left_split.setSizes([440, 320])
+        # 内容区为主舞台：默认占据约 2/3 高度，确保专利内容清晰可读
+        left_split.setStretchFactor(0, 2)
+        left_split.setStretchFactor(1, 1)
+        left_split.setSizes([560, 280])
         body.addWidget(left_split, 1)
 
-        # 右侧：模块切换竖条
+        # 右侧：模块切换竖条 + 文件生成
+        right_col = QVBoxLayout()
+        right_col.setSpacing(8)
+
         self.activity_bar = ActivityBar([
             ("📌", "标记"),
             ("🧹", "清洗"),
@@ -445,7 +449,25 @@ class MainWindow(QMainWindow):
             ("⚖️", "权项"),
         ])
         self.activity_bar.switched.connect(self.panel_stack.setCurrentIndex)
-        body.addWidget(self.activity_bar)
+        right_col.addWidget(self.activity_bar)
+        right_col.addStretch()
+
+        # 文件生成（独立放在右侧，与各模块操作分离）
+        self.generate_btn = QPushButton("💾 文件生成")
+        self.generate_btn.setObjectName("primaryBtn")
+        self.generate_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.generate_btn.setEnabled(False)
+        self.generate_btn.setToolTip("将内存中累计的所有修改保存为新的 docx 文件")
+        self.generate_btn.clicked.connect(self._on_generate_file)
+        right_col.addWidget(self.generate_btn)
+
+        self.open_dir_cb = QCheckBox("打开目录")
+        self.open_dir_cb.setChecked(False)
+        self.open_dir_cb.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.open_dir_cb.setToolTip("勾选后，文件生成成功时自动打开输出目录")
+        right_col.addWidget(self.open_dir_cb)
+
+        body.addLayout(right_col)
 
         main_layout.addLayout(body, 1)
 
@@ -589,54 +611,8 @@ class MainWindow(QMainWindow):
 
         action_layout.addStretch()
 
-        # 文件生成按钮（与上述操作分离）
-        self.generate_btn = QPushButton("💾  文件生成")
-        self.generate_btn.setObjectName("primaryBtn")
-        self.generate_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.generate_btn.setEnabled(False)
-        self.generate_btn.setToolTip("将内存中累计的所有修改保存为新的 docx 文件")
-        self.generate_btn.clicked.connect(self._on_generate_file)
-        action_layout.addWidget(self.generate_btn)
-
-        # 「打开文件所在目录」勾选框：默认不勾选，避免自动弹资源管理器
-        self.open_dir_cb = QCheckBox("打开文件所在目录")
-        self.open_dir_cb.setChecked(False)
-        self.open_dir_cb.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.open_dir_cb.setToolTip(
-            "勾选后，文件生成成功时会自动打开输出目录。\n"
-            "默认不勾选，避免频繁弹窗打断工作。"
-        )
-        action_layout.addWidget(self.open_dir_cb)
-
         layout.addLayout(action_layout)
-
-        # ── 下方：左日志 / 右历史 双栏 ───────────────────
-        bottom_splitter = QSplitter(Qt.Orientation.Horizontal)
-
-        # 左：操作日志
-        log_group = QGroupBox("📋 操作日志")
-        log_layout = QVBoxLayout(log_group)
-        self.log_text = QTextEdit()
-        self.log_text.setReadOnly(True)
-        self.log_text.setPlaceholderText("操作的详细日志将在此显示...")
-        log_layout.addWidget(self.log_text)
-        bottom_splitter.addWidget(log_group)
-
-        # 右：操作历史
-        history_group = QGroupBox("📜 操作历史")
-        history_layout = QVBoxLayout(history_group)
-        self.history_text = QTextEdit()
-        self.history_text.setReadOnly(True)
-        self.history_text.setPlaceholderText(
-            "尚未对当前文档进行修改。\n"
-            "所有「标注 / 删除标记 / 清洗 / 错别字修正」等操作都会先记录在这里，\n"
-            "待您确认后点击右上方的「💾 文件生成」按钮一次性写入新 docx。"
-        )
-        history_layout.addWidget(self.history_text)
-        bottom_splitter.addWidget(history_group)
-
-        bottom_splitter.setSizes([500, 400])
-        layout.addWidget(bottom_splitter, 1)
+        layout.addStretch(1)
 
         return widget
 
@@ -656,15 +632,7 @@ class MainWindow(QMainWindow):
         cards_row.addWidget(self._build_orphan_card(), 1)
 
         outer_layout.addLayout(cards_row)
-
-        # ── 底部：清洗日志 ───────────────────────────────
-        clean_log_group = QGroupBox("📋 清洗操作日志")
-        clean_log_layout = QVBoxLayout(clean_log_group)
-        self.clean_log_text = QTextEdit()
-        self.clean_log_text.setReadOnly(True)
-        self.clean_log_text.setPlaceholderText("清洗操作的日志将在此显示...")
-        clean_log_layout.addWidget(self.clean_log_text)
-        outer_layout.addWidget(clean_log_group, 1)
+        outer_layout.addStretch(1)
 
         return outer
 
@@ -1628,9 +1596,10 @@ class MainWindow(QMainWindow):
         self.generate_btn.setEnabled(True)
 
     def _render_history(self):
-        """重新渲染历史框"""
+        """重新渲染历史（内容区「操作历史」标签页）"""
+        edit = self.content_area.history_edit
         if not self.history_entries:
-            self.history_text.clear()
+            edit.clear()
             return
         lines = []
         for i, e in enumerate(self.history_entries, 1):
@@ -1640,13 +1609,13 @@ class MainWindow(QMainWindow):
                     if d.strip():
                         lines.append(f"&nbsp;&nbsp;&nbsp;&nbsp;{d}")
             lines.append("")
-        self.history_text.setHtml("<br>".join(lines))
-        sb = self.history_text.verticalScrollBar()
+        edit.setHtml("<br>".join(lines))
+        sb = edit.verticalScrollBar()
         sb.setValue(sb.maximum())
 
     def _clear_history(self):
         self.history_entries = []
-        self.history_text.clear()
+        self.content_area.history_edit.clear()
         self.generate_btn.setEnabled(False)
 
     # ===== 标记同步 =====
@@ -1864,11 +1833,11 @@ class MainWindow(QMainWindow):
         super().closeEvent(event)
 
     def _log(self, message: str):
-        """添加日志"""
-        self.log_text.append(message)
-        # 滚动到底部
-        scrollbar = self.log_text.verticalScrollBar()
-        scrollbar.setValue(scrollbar.maximum())
+        """添加日志（统一汇总到内容区「操作日志」标签页）"""
+        edit = self.content_area.log_edit
+        edit.append(message)
+        sb = edit.verticalScrollBar()
+        sb.setValue(sb.maximum())
 
     def _show_toast(self, message: str, toast_type: str = "info"):
         """显示Toast提示（多条纵向堆叠，不互相遮挡）"""
@@ -1940,10 +1909,8 @@ class MainWindow(QMainWindow):
         return [name for name, cb in self.suoshu_checkboxes.items() if cb.isChecked()]
 
     def _log_clean(self, message: str):
-        """向清洗日志区追加一行"""
-        self.clean_log_text.append(message)
-        sb = self.clean_log_text.verticalScrollBar()
-        sb.setValue(sb.maximum())
+        """清洗日志统一汇总到内容区「操作日志」标签页"""
+        self._log(message)
 
     def _set_clean_buttons_enabled(self, enabled: bool):
         """设置清洗操作按钮状态（与标注组互锁，见 _set_doc_ops_enabled）"""

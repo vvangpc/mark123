@@ -1,11 +1,14 @@
 # -*- coding: utf-8 -*-
 """
-ui/content_area.py — 左上常驻专利内容区
+ui/content_area.py — 左上常驻内容区（主舞台）
 
-上方 4 个标签页：权利要求书 / 说明书 / 说明书附图 / 说明书摘要。
-其中「说明书」是技术领域 + 背景技术 + 发明内容 + 附图说明 + 具体实施方式的合集。
+标签页：
+  权利要求书 / 说明书 / 说明书附图 / 说明书摘要 — 专利内容（「说明书」是技术领域 +
+  背景技术 + 发明内容 + 附图说明 + 具体实施方式的合集）；
+  操作日志 / 操作历史 — 由主窗口写入的工具页（各模块的日志与历史统一汇总到这里，
+  以腾空下方操作区、让专利内容占据主要空间）。
 
-阶段二·增量1：只读显示（基于 get_section_text 的纯文本）。
+阶段二·增量1：专利内容只读显示。
 阶段二·增量2（任务6）：升级为结构化可编辑（行=段、行数守恒回写、双击定位高亮），
                         并按 doc_parser._has_image 把含图片/公式的段置为只读。
 """
@@ -18,7 +21,7 @@ _SPEC_ORDER = ["技术领域", "背景技术", "发明内容", "附图说明", "
 
 
 class ContentArea(QWidget):
-    """常驻内容区：4 标签页显示专利各部分。"""
+    """常驻内容区：专利内容 4 标签页 + 操作日志 / 操作历史 工具页。"""
 
     TAB_NAMES = ["权利要求书", "说明书", "说明书附图", "说明书摘要"]
 
@@ -30,6 +33,8 @@ class ContentArea(QWidget):
 
         self.tabs = QTabWidget()
         self.tabs.setObjectName("contentTabs")
+
+        # —— 专利内容标签页 ——
         self._edits: list[QTextEdit] = []
         for name in self.TAB_NAMES:
             edit = QTextEdit()
@@ -38,6 +43,24 @@ class ContentArea(QWidget):
             edit.setPlaceholderText("加载文档后在此显示专利内容…")
             self._edits.append(edit)
             self.tabs.addTab(edit, name)
+
+        # —— 工具标签页：操作日志 / 操作历史 ——
+        self.log_edit = QTextEdit()
+        self.log_edit.setReadOnly(True)
+        self.log_edit.setObjectName("contentEdit")
+        self.log_edit.setPlaceholderText("各模块的操作日志将在此统一显示…")
+        self.tabs.addTab(self.log_edit, "📋 操作日志")
+
+        self.history_edit = QTextEdit()
+        self.history_edit.setReadOnly(True)
+        self.history_edit.setObjectName("contentEdit")
+        self.history_edit.setPlaceholderText(
+            "尚未对当前文档进行修改。\n"
+            "所有「标注 / 删除标记 / 清洗 / 错别字修正」等操作都会先记录在这里，\n"
+            "待确认后点右侧「💾 文件生成」一次性写入新 docx。"
+        )
+        self.tabs.addTab(self.history_edit, "📜 操作历史")
+
         layout.addWidget(self.tabs)
 
     def clear(self):
@@ -45,7 +68,7 @@ class ContentArea(QWidget):
             e.clear()
 
     def load(self, doc_data: dict):
-        """从 doc_data 填充 4 个标签页。"""
+        """从 doc_data 填充 4 个专利内容标签页（日志 / 历史不在此清空）。"""
         if not doc_data:
             self.clear()
             return

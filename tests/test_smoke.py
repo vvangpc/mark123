@@ -33,7 +33,10 @@ def test_main_window_construct():
 
     # 三区骨架：常驻内容区(4 标签页) + 模块面板栈(4 页) + 模块切换竖条
     assert hasattr(win, "content_area"), "应有左上常驻内容区 content_area"
-    assert win.content_area.tabs.count() == 4, "内容区应有 4 个标签页"
+    assert win.content_area.tabs.count() == 6, "内容区应有 4 内容页 + 操作日志 + 操作历史"
+    assert hasattr(win.content_area, "log_edit"), "内容区应有操作日志页 log_edit"
+    assert hasattr(win.content_area, "history_edit"), "内容区应有操作历史页 history_edit"
+    assert hasattr(win, "generate_btn"), "文件生成按钮应存在（已移到右侧）"
     assert hasattr(win, "panel_stack"), "应有左下模块面板栈 panel_stack"
     assert win.panel_stack.count() == 4, f"预期 4 个模块面板，实际 {win.panel_stack.count()}"
     assert hasattr(win, "activity_bar"), "应有右侧模块切换竖条 activity_bar"
