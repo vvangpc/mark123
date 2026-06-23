@@ -12,9 +12,13 @@ test_claim_check.py — 权利要求引用基础检查回归测试
     所述流量计为质量流量计…      → "流量计"(3字) 之后的 "质量流量计" 首字被盖
 
 运行：
-    python test_claim_check.py
+    python tests/test_claim_check.py
 """
-from claim_check import parse_claims_ex, check_antecedent_basis
+import os
+import sys
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from core.claim_check import parse_claims_ex, check_antecedent_basis
 
 
 class _Shell:
@@ -77,7 +81,7 @@ def test_modes_consistent_on_basis():
         "1.一种调节装置，其特征在于，所述装置包括流量调节阀；"
         "所述流量调节阀的入口与气源连通。",
     ]
-    from config_manager import get_builtin_boundary_blacklist
+    from config.config_manager import get_builtin_boundary_blacklist
     bl = get_builtin_boundary_blacklist()
     combos = [
         dict(use_dynamic_truncate=False, use_dynamic_fallback=False, boundary_blacklist=None),

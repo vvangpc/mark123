@@ -5,10 +5,10 @@ claim_ignore_dialog.py — 不确定用语词库编辑器
 维护权利要求书中"不应出现"的含糊 / 不确定用语（例如：约、大概、可能、
 左右、优选…）。勾选「开始检查」时，会把这些词当作 `vague` 类问题报出。
 """
-from config_manager import (
+from config.config_manager import (
     load_vague_wordbank, save_vague_wordbank, get_builtin_vague_wordbank,
 )
-from dialogs.base_wordbank_dialog import BaseWordbankDialog
+from ui.dialogs.base_wordbank_dialog import BaseWordbankDialog
 
 
 class ClaimIgnoreDialog(BaseWordbankDialog):

@@ -223,7 +223,7 @@ def load_vague_wordbank() -> list:
     if not os.path.exists(path):
         # 首次使用：返回内置默认，交由上层按需持久化
         try:
-            from claim_check import VAGUE_WORDBANK
+            from core.claim_check import VAGUE_WORDBANK
             return list(VAGUE_WORDBANK)
         except Exception:
             return []
@@ -260,7 +260,7 @@ def save_vague_wordbank(items) -> None:
 def get_builtin_vague_wordbank() -> list:
     """返回内置不确定用语词库（用于「恢复内置」按钮）"""
     try:
-        from claim_check import VAGUE_WORDBANK
+        from core.claim_check import VAGUE_WORDBANK
         return list(VAGUE_WORDBANK)
     except Exception:
         return []
@@ -276,7 +276,7 @@ def load_boundary_blacklist() -> list:
     path = get_boundary_blacklist_path()
     if not os.path.exists(path):
         try:
-            from claim_check import DEFAULT_BOUNDARY_BLACKLIST
+            from core.claim_check import DEFAULT_BOUNDARY_BLACKLIST
             return list(DEFAULT_BOUNDARY_BLACKLIST)
         except Exception:
             return []
@@ -313,7 +313,7 @@ def save_boundary_blacklist(items) -> None:
 def get_builtin_boundary_blacklist() -> list:
     """返回内置黑名单（用于「恢复内置」按钮）"""
     try:
-        from claim_check import DEFAULT_BOUNDARY_BLACKLIST
+        from core.claim_check import DEFAULT_BOUNDARY_BLACKLIST
         return list(DEFAULT_BOUNDARY_BLACKLIST)
     except Exception:
         return []
@@ -324,7 +324,7 @@ def get_merged_wordbank() -> list:
     - 剔除用户禁用的内置条目
     - 用户条目优先（若 wrong 与内置相同，则覆盖内置）
     """
-    from typo_wordbank import WORDBANK as BUILTIN
+    from config.typo_wordbank import WORDBANK as BUILTIN
     user = load_user_wordbank()
     user_wrongs = {e["wrong"] for e in user}
     disabled = load_disabled_builtin_wrongs()

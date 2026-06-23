@@ -18,11 +18,11 @@ from PyQt6.QtGui import (
     QDragEnterEvent, QDropEvent, QTextCursor, QTextCharFormat, QColor, QFont,
 )
 
-from doc_parser import parse_document, get_section_text
-from mark_extractor import extract_marks_from_paragraph, extract_marks_from_paragraphs, marks_to_display_text, parse_marks_from_display_text
-from annotator import smart_annotate_section, smart_remove_section
-from styles import DARK_THEME_QSS, LIGHT_THEME_QSS
-from cleaner import (
+from core.doc_parser import parse_document, get_section_text
+from core.mark_extractor import extract_marks_from_paragraph, extract_marks_from_paragraphs, marks_to_display_text, parse_marks_from_display_text
+from core.annotator import smart_annotate_section, smart_remove_section
+from ui.styles import DARK_THEME_QSS, LIGHT_THEME_QSS
+from core.cleaner import (
     remove_suoshu, unify_halfwidth_punct, convert_fullwidth_to_halfwidth,
     detect_orphan_marks,
     check_typos_wordbank, check_duplicate_words,
@@ -177,7 +177,7 @@ class CleanWorker(QThread):
                     full_n = convert_fullwidth_to_halfwidth(paragraphs, sections)
                 self.progress.emit(70)
                 if do_consec:
-                    from cleaner import fix_consecutive_punct
+                    from core.cleaner import fix_consecutive_punct
                     consec_n = fix_consecutive_punct(paragraphs, sections=sections)
                 self.progress.emit(100)
 
@@ -194,7 +194,7 @@ class CleanWorker(QThread):
                 marks = self.kwargs.get("marks", {})
                 orphans = detect_orphan_marks(paragraphs, sections, marks)
                 self.progress.emit(60)
-                from cleaner import detect_orphan_figures
+                from core.cleaner import detect_orphan_figures
                 missing_figs = detect_orphan_figures(paragraphs, sections)
                 self.progress.emit(100)
 
@@ -340,7 +340,7 @@ class MainWindow(QMainWindow):
         self._claim_session_ignore = set() # 本次会话内结果行「忽略」记录（不持久化）
 
         # 配置管理器
-        from config_manager import AppSettings
+        from config.config_manager import AppSettings
         self.settings = AppSettings()
 
         # 读取已保存的主题（默认浅色）
@@ -365,7 +365,7 @@ class MainWindow(QMainWindow):
 
         # 应用持久化的主题
         try:
-            from styles import DARK_THEME_QSS, LIGHT_THEME_QSS
+            from ui.styles import DARK_THEME_QSS, LIGHT_THEME_QSS
             app = QApplication.instance()
             if app is not None:
                 app.setStyleSheet(DARK_THEME_QSS if self.current_theme == "dark" else LIGHT_THEME_QSS)
@@ -394,9 +394,6 @@ class MainWindow(QMainWindow):
             )
             self.claim_vague_cb.setChecked(
                 self.settings.get_bool("claim/check_vague", True)
-            )
-            self.claim_term_cb.setChecked(
-                self.settings.get_bool("claim/check_term", False)
             )
         except Exception:
             pass
@@ -433,7 +430,7 @@ class MainWindow(QMainWindow):
         tab4 = self._create_typo_tab()
         self.tab_widget.addTab(tab4, "📝 错别字检查")
 
-        # 标签页5: 权利要求书检查（引用基础 / 引用关系 / 术语一致性）
+        # 标签页5: 权利要求书检查（引用基础 / 引用关系 / 不确定用语）
         tab5 = self._create_claim_check_tab()
         self.tab_widget.addTab(tab5, "⚖️ 权利要求书检查")
 
@@ -1057,14 +1054,14 @@ class MainWindow(QMainWindow):
 
         toolbar.addWidget(dyn_box)
 
-        # ── 不确定用语检查 / 术语不一致检查 上下分布的勾选框 ──
+        # ── 不确定用语检查 勾选框 ──
         check_box = QFrame()
         check_box.setObjectName("checkBox")
         check_layout = QVBoxLayout(check_box)
         check_layout.setContentsMargins(6, 0, 6, 0)
         check_layout.setSpacing(2)
 
-        # 第一行：不确定用语检查（默认勾选，保持原有行为）
+        # 不确定用语检查（默认勾选，保持原有行为）
         vague_row = QHBoxLayout()
         vague_row.setContentsMargins(0, 0, 0, 0)
         vague_row.setSpacing(4)
@@ -1084,24 +1081,6 @@ class MainWindow(QMainWindow):
         vague_row.addWidget(self.claim_vague_label)
         vague_row.addStretch()
         check_layout.addLayout(vague_row)
-
-        # 第二行：术语不一致检查（噪音较大，默认关闭）
-        term_row = QHBoxLayout()
-        term_row.setContentsMargins(0, 0, 0, 0)
-        term_row.setSpacing(4)
-        self.claim_term_cb = QCheckBox()
-        self.claim_term_cb.setChecked(False)
-        self.claim_term_cb.setCursor(Qt.CursorShape.PointingHandCursor)
-        term_row.addWidget(self.claim_term_cb)
-        self.claim_term_label = QLabel(
-            '<a href="info" style="text-decoration:none;color:inherit;">术语不一致检查</a>'
-        )
-        self.claim_term_label.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.claim_term_label.setToolTip("点击查看功能说明")
-        self.claim_term_label.linkActivated.connect(self._on_term_link)
-        term_row.addWidget(self.claim_term_label)
-        term_row.addStretch()
-        check_layout.addLayout(term_row)
 
         toolbar.addWidget(check_box)
 
@@ -1195,11 +1174,11 @@ class MainWindow(QMainWindow):
     def _get_wordbank_count(self) -> int:
         """读取当前生效词库条目数（合并内置 + 用户自定义）"""
         try:
-            from config_manager import get_merged_wordbank
+            from config.config_manager import get_merged_wordbank
             return len(get_merged_wordbank())
         except Exception:
             try:
-                from typo_wordbank import WORDBANK
+                from config.typo_wordbank import WORDBANK
                 return len(WORDBANK)
             except Exception:
                 return 0
@@ -1217,7 +1196,7 @@ class MainWindow(QMainWindow):
     def _on_open_wordbank_dialog(self):
         """打开词库编辑对话框"""
         try:
-            from wordbank_dialog import WordbankDialog
+            from ui.dialogs.wordbank_dialog import WordbankDialog
         except Exception as e:
             QMessageBox.critical(self, "无法打开", f"加载词库编辑器失败：\n{e}")
             return
@@ -1234,7 +1213,7 @@ class MainWindow(QMainWindow):
         if not hasattr(self, "dup_ignore_label"):
             return
         try:
-            from config_manager import load_dup_ignore_list
+            from config.config_manager import load_dup_ignore_list
             n = len(load_dup_ignore_list())
         except Exception:
             n = 0
@@ -1246,7 +1225,7 @@ class MainWindow(QMainWindow):
     def _on_open_dup_ignore_dialog(self):
         """打开「重复字词忽略词库」编辑对话框"""
         try:
-            from dup_ignore_dialog import DupIgnoreDialog
+            from ui.dialogs.dup_ignore_dialog import DupIgnoreDialog
         except Exception as e:
             QMessageBox.critical(self, "无法打开", f"加载忽略词库编辑器失败：\n{e}")
             return
@@ -1725,7 +1704,7 @@ class MainWindow(QMainWindow):
         self.mark_count_label.setText(f"共 {len(new_marks)} 个标记")
 
         # 写回 mark 段落
-        from annotator import update_mark_paragraph_text
+        from core.annotator import update_mark_paragraph_text
         mark_para = self.doc_data.get('mark_para')
         if mark_para is None:
             self._show_toast("未找到附图标记段落，无法同步到文档", "warning")
@@ -1887,7 +1866,7 @@ class MainWindow(QMainWindow):
     def _on_check_updates_manual(self):
         """用户主动触发的更新检查（无更新/失败均给反馈）"""
         try:
-            from updater import UpdateChecker
+            from infra.updater import UpdateChecker
             from version import __version__
         except Exception as e:
             QMessageBox.warning(self, "检查更新", f"无法加载更新模块：{e}")
@@ -1919,8 +1898,6 @@ class MainWindow(QMainWindow):
                 self.settings.set_bool("claim/dyn_fallback", self.claim_dyn_fb_cb.isChecked())
             if hasattr(self, "claim_vague_cb"):
                 self.settings.set_bool("claim/check_vague", self.claim_vague_cb.isChecked())
-            if hasattr(self, "claim_term_cb"):
-                self.settings.set_bool("claim/check_term", self.claim_term_cb.isChecked())
             if hasattr(self, "suoshu_checkboxes"):
                 for _name, _cb in self.suoshu_checkboxes.items():
                     self.settings.set_bool(f"clean/suoshu/{_name}", _cb.isChecked())
@@ -2144,7 +2121,7 @@ class MainWindow(QMainWindow):
         else:
             self._current_check_kind = "dup"
             try:
-                from config_manager import load_dup_ignore_list
+                from config.config_manager import load_dup_ignore_list
                 ignore_list = load_dup_ignore_list()
             except Exception:
                 ignore_list = []
@@ -2467,8 +2444,8 @@ class MainWindow(QMainWindow):
             shell_paragraphs[self._claim_start_idx + i] = _Shell(line)
 
         try:
-            from claim_check import run_all_checks
-            from config_manager import load_vague_wordbank, load_boundary_blacklist
+            from core.claim_check import run_all_checks
+            from config.config_manager import load_vague_wordbank, load_boundary_blacklist
             vague_words = load_vague_wordbank()
             use_trunc = self.claim_dyn_trunc_cb.isChecked()
             use_fb = self.claim_dyn_fb_cb.isChecked()
@@ -2482,7 +2459,6 @@ class MainWindow(QMainWindow):
                 ignore_set=set(self._claim_session_ignore),
                 vague_words=vague_words,
                 check_vague=self.claim_vague_cb.isChecked(),
-                check_term=self.claim_term_cb.isChecked(),
                 use_dynamic_truncate=use_trunc,
                 use_dynamic_fallback=use_fb,
                 boundary_blacklist=boundary_bl,
@@ -2508,7 +2484,6 @@ class MainWindow(QMainWindow):
         KIND_LABELS = {
             "antecedent": "引用基础",
             "dependency": "引用关系",
-            "term":       "术语不一致",
             "vague":      "不确定用语",
             "numbering":  "序号",
             "multi_dep":  "多引合法性",
@@ -2559,7 +2534,6 @@ class MainWindow(QMainWindow):
         kind_map = {
             "antecedent": "引用基础",
             "dependency": "引用关系",
-            "term": "术语一致性",
             "vague": "不确定用语",
             "numbering": "独立权项序号",
             "multi_dep": "多项引用合法性",
@@ -2755,7 +2729,7 @@ class MainWindow(QMainWindow):
     def _on_claim_ignore_dialog(self):
         """打开忽略词库编辑对话框"""
         try:
-            from claim_ignore_dialog import ClaimIgnoreDialog
+            from ui.dialogs.claim_ignore_dialog import ClaimIgnoreDialog
         except Exception as e:
             QMessageBox.critical(self, "无法打开", f"加载忽略词库编辑器失败：\n{e}")
             return
@@ -2803,14 +2777,14 @@ class MainWindow(QMainWindow):
 
     def _on_open_boundary_blacklist(self):
         try:
-            from boundary_blacklist_dialog import BoundaryBlacklistDialog
+            from ui.dialogs.boundary_blacklist_dialog import BoundaryBlacklistDialog
         except Exception as e:
             QMessageBox.critical(self, "无法打开", f"加载黑名单词库编辑器失败：\n{e}")
             return
         dlg = BoundaryBlacklistDialog(self)
         dlg.exec()
 
-    # ── 不确定用语检查 / 术语不一致检查 的信息弹窗 + 词库入口 ──
+    # ── 不确定用语检查 的信息弹窗 + 词库入口 ──
     def _on_vague_link(self, href: str):
         if href == "wb":
             self._on_claim_ignore_dialog()
@@ -2825,18 +2799,6 @@ class MainWindow(QMainWindow):
             "• 词库可点本行右侧的「[词库]」按钮编辑，支持增删 / 导入 / 导出\n"
             "• 默认勾选；如需关闭检查可取消勾选\n"
             "• 内置 30+ 条常见词，可恢复默认"
-        )
-
-    def _on_term_link(self, href: str):
-        QMessageBox.information(
-            self, "术语不一致检查 — 功能说明",
-            "【术语不一致检查（同一术语多种写法）】\n\n"
-            "以『所述』后面的 N 字术语作为锚点，在权利要求书范围内查找\n"
-            "「长度相同但仅一字之差」的相似术语对，作为可能的术语漂移上报。\n\n"
-            "例：权 1 写「齿圈」、权 2 写「齿环」→ 报『齿圈』vs『齿环』疑似同义\n\n"
-            "• 该检查噪音相对较大，默认不勾选\n"
-            "• 仅在做权利要求书术语一致性复盘时建议启用\n"
-            "• 受工具栏「检查字数 N」与「忽略词库」共同影响"
         )
 
     def _on_claim_confirm_edits(self) -> bool:
@@ -2861,7 +2823,7 @@ class MainWindow(QMainWindow):
             return False
 
         paragraphs = self.doc_data['paragraphs']
-        from claim_check import set_paragraph_text
+        from core.paragraph_edit import set_paragraph_text
         changed_count = 0
         changed_lines = []
         for i, new_line in enumerate(lines):

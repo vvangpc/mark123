@@ -64,7 +64,7 @@
 | ✏️ 错别字 | 用户词库 | 自定义添加、导入 / 导出 JSON |
 | 🔁 重复字词 | 连续重复检测 | 识别 `所述所述`、`AA`、`ABCABC` 等 |
 | 🔁 重复字词 | 忽略词库 | 4 列网格，可增删 / 导入 / 导出 |
-| 📜 权项检查 | 7 项引用审查 | 引用基础 / 依赖关系 / 术语一致 / 不确定用语 / 序号连续性 / 多项引用合法性 / 句号结尾（V3.9 新） |
+| 📜 权项检查 | 6 项引用审查 | 引用基础 / 依赖关系 / 不确定用语 / 序号连续性 / 多项引用合法性 / 句号结尾（V3.9 新） |
 | 📜 权项检查 | 前向引用识别 | 同权项内「所述X」先于 X 定义位置出现时也能识别 |
 | 📜 权项检查 | 前言保护 | 权项首段「一种 … 的装置，其特征在于」前的专利名称不会被误标 |
 | 📜 权项检查 | 可编辑预览 | 左侧直接修改权项，确认后同步回文档数据 |
@@ -113,7 +113,7 @@
 - **附图标记编辑框** — 打开文档后自动扫描「附图说明」段落并填入；识别不准可直接手改再点「🔄 重新确认标记」
 - **可编辑文档预览** — 右侧按段落逐行载入，支持就地编辑；改完点「✔ 确认修改」同步回内存数据
 - **⚡ 一键标注** — 权利要求书 `齿圈（1）` + 具体实施方式 `齿圈1`
-- **仅标注权利要求书 / 仅标注具体实施方式** — 只处理单个章节
+- **仅标注权利要求书 / 仅标注具体实施方式** — 只处理单个章节；**只导入单独的说明书**（无权利要求书）时，用「仅标注具体实施方式」标注、「删除所有标记」清除即可
 - **🧹 一键清洗** — 移除全部附图编号，恢复纯文字
 
 > 为什么不坏公式？`annotator.annotate_paragraph_safe()` 只修改 `<w:t>` 文本节点，完整跳过 `<w:drawing>`、`<m:oMath>` 等对象节点。
@@ -133,17 +133,16 @@
 
 ### Tab 4：权利要求书检查
 
-七项专业审查，配可编辑预览 + 联动高亮。
+六项专业审查，配可编辑预览 + 联动高亮。
 
 | # | 类型 | 检查目标 | 触发 |
 |---|---|---|---|
 | ① | `antecedent` | **引用基础** — `所述 X` 首次出现前是否已定义 X（支持同权项内位置先后比对） | N 字滑窗 |
 | ② | `dependency` | **引用关系** — `根据权利要求 X 所述` 的 X 是否存在 / 前引 / 自引 / 循环 | 每次必跑 |
-| ③ | `term` | **术语一致性** — `所述齿圈` vs `所述齿环` 等差异 | N 字滑窗，仅扫 `所述` 后面 |
-| ④ | `vague` | **不确定用语** — `约` / `大概` / `优选` / `左右` 等 | 每次必跑（对照词库） |
-| ⑤ | `numbering` | **独立权项序号** — 编号是否从 1 开始且连续 | 每次必跑 |
-| ⑥ | `multi_dep` | **多项引用合法性** — `权利要求 1、2 或 3` 这种「或」引用 | 每次必跑 |
-| ⑦ | `ending` | **句号结尾**（V3.9 新） — 每条权利要求必须以「。」结尾 | 每次必跑 |
+| ③ | `vague` | **不确定用语** — `约` / `大概` / `优选` / `左右` 等 | 每次必跑（对照词库） |
+| ④ | `numbering` | **独立权项序号** — 编号是否从 1 开始且连续 | 每次必跑 |
+| ⑤ | `multi_dep` | **多项引用合法性** — `权利要求 1、2 或 3` 这种「或」引用 | 每次必跑 |
+| ⑥ | `ending` | **句号结尾**（V3.9 新） — 每条权利要求必须以「。」结尾 | 每次必跑 |
 
 - **左侧可编辑预览** — `QPlainTextEdit`，每段一行；改完点「✔ 确认修改」才同步回 `doc_data`
 - **右侧结果表** — 双击「上下文」跳转高亮；双击「说明」弹完整详情；行内「忽略」本次会话生效
@@ -170,12 +169,6 @@
 1. 拖入 docx
 2. 核对附图标记编辑框
 3. 点「仅标注具体实施方式」→「💾 文件生成」
-
-**场景三：审查意见回函前的术语一致性复盘**
-
-1. 打开最新稿 → Tab 4 → N 调到 3 或 4 → 开始检查
-2. 看 `term` 类结果，双击上下文定位
-3. 左侧改名统一 → 确认修改 → 重扫 → 生成
 
 ---
 
@@ -223,32 +216,43 @@ C:\Users\<用户名>\AppData\Local\PatentMarker\MarkAssistant\
 ```
 mark123/
 ├── main.py                    # 程序入口（支持 sys.argv[1] 自动载入文件）
-├── main_window.py             # 主窗口：四大 Tab 构建、事件协调、历史面板
-├── workers.py                 # 后台线程：AnnotateWorker / CleanWorker / ToastWidget
-├── styles.py                  # 浅色 / 深色主题 QSS
+├── version.py                 # 版本号唯一真源（CI 据此发版）
 │
-├── doc_parser.py              # docx 五书分段解析（权利要求书 / 说明书 / ...）
-├── annotator.py               # XML 级安全标注引擎
-├── mark_extractor.py          # 附图标记 "1-齿圈" 等格式的识别
-├── cleaner.py                 # 删「所述」/ 标点 / 孤立检测 / 错字&重复
-├── claim_check.py             # 权利要求书七项检查（纯函数，无 UI）
+├── core/                      # 纯逻辑层（无 PyQt 依赖）
+│   ├── doc_parser.py          # docx 五书分段解析（权利要求书 / 说明书 / ...）
+│   ├── claim_check.py         # 权利要求书六项检查（纯函数）
+│   ├── cleaner.py             # 删「所述」/ 标点 / 孤立检测 / 错字&重复
+│   ├── annotator.py           # XML 级安全标注引擎
+│   ├── mark_extractor.py      # 附图标记 "1-齿圈" 等格式的识别
+│   └── paragraph_edit.py      # 段落级格式安全写回（set_paragraph_text）
 │
-├── typo_wordbank.py           # 内置专利错别字词库（165+ 条）
-├── wordbank_dialog.py         # 错别字词库编辑器
-├── dialogs/
-│   └── base_wordbank_dialog.py  # 三个同构忽略词对话框的公共基类
-├── dup_ignore_dialog.py       # 重复字词忽略词库编辑器
-├── claim_ignore_dialog.py     # 不确定用语词库编辑器
-├── boundary_blacklist_dialog.py # 引用基础边界黑名单
+├── config/                    # 配置与词库
+│   ├── config_manager.py      # QSettings + JSON 持久化封装
+│   └── typo_wordbank.py       # 内置专利错别字词库（165+ 条）
 │
-├── config_manager.py          # QSettings + JSON 持久化封装
-├── single_instance.py         # 单实例守卫：QLocalServer 命名管道 IPC
+├── ui/                        # PyQt6 界面层
+│   ├── main_window.py         # 主窗口：Tab 构建、事件协调、历史面板
+│   ├── workers.py             # 后台线程：AnnotateWorker / CleanWorker
+│   ├── styles.py              # 浅色 / 深色主题 QSS
+│   └── dialogs/               # 词库 / 忽略表编辑器
+│       ├── base_wordbank_dialog.py       # 同构忽略词对话框公共基类
+│       ├── wordbank_dialog.py            # 错别字词库编辑器
+│       ├── dup_ignore_dialog.py          # 重复字词忽略词库编辑器
+│       ├── claim_ignore_dialog.py        # 不确定用语词库编辑器
+│       └── boundary_blacklist_dialog.py  # 引用基础边界黑名单
+│
+├── infra/                     # 基础设施
+│   ├── updater.py             # GitHub Releases 在线更新
+│   └── single_instance.py     # 单实例守卫：QLocalServer 命名管道 IPC
+│
+├── tests/                     # 回归测试
+│   ├── test_smoke.py          # 主窗口冒烟测试
+│   └── test_claim_check.py    # 权项引用基础检查回归
 │
 ├── build.py                   # PyInstaller 打包脚本（onedir / onefile）
 ├── installer.iss              # Inno Setup 6 安装版脚本（右键菜单 + 自选目录）
 ├── make_ico.py                # app_icon.png → .ico 多尺寸生成
 ├── app_icon.png / app_icon.ico
-├── test_smoke.py              # 最小冒烟测试
 └── pyproject.toml / uv.lock
 ```
 
@@ -293,9 +297,6 @@ iscc installer.iss
 
 **Q：标注后公式 / 图形消失了怎么办？**
 A：不会消失。`annotate_paragraph_safe` 只动 `<w:t>` 节点，不改 `<w:drawing>` / `<m:oMath>`。如真遇到，请附最小复现文件反馈。
-
-**Q：权利要求书检查结果里「术语一致性」误报怎么处理？**
-A：该检测只扫描 `所述` 后面的术语串。仍有误报时：① 行内「忽略」本次会话生效；② 把 N 调大（3 / 4）获得更长锚点。
 
 **Q：右键菜单「用专利标记助手打开」没有出现？**
 A：安装时确认勾选了「文件关联」任务；或重新运行安装版选择「修复」；或在 `HKCU\Software\Classes\SystemFileAssociations\.docx\shell\` 下确认 `专利标记助手` 键存在。

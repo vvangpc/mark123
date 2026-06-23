@@ -16,8 +16,8 @@ from PyQt6.QtWidgets import (
     QFileDialog, QLineEdit
 )
 
-from typo_wordbank import WORDBANK as BUILTIN_WORDBANK
-from config_manager import (
+from config.typo_wordbank import WORDBANK as BUILTIN_WORDBANK
+from config.config_manager import (
     load_user_wordbank, save_user_wordbank,
     load_disabled_builtin_wrongs, save_disabled_builtin_wrongs,
 )
