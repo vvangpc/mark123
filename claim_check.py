@@ -605,8 +605,20 @@ def check_antecedent_basis(claims: dict, n: int, ignore_set: set,
         # 优化：trunc_term 每个位置最多算一次，复用在 suoshu_mask 构造 + 主校验
         text_len = len(text)
         trunc_term_cache: dict = {}
+        # suoshu_mask：完整"所述X"窗口，供动态模式的自由形式收集用——
+        #   自由形式按变长子串收集，必须盖住 X 的整段，否则会把引用短语的子串
+        #   误当作"首次定义"。
+        # ngram_mask：仅盖住"所述X"中 X 的【首字】，供 n 字定义扫描用。
+        #   定义扫描按"ngram 与掩码相交即跳过"，而引用 ngram 的起点正是 X 首字，
+        #   故只盖首字即可把该引用 ngram 排除出定义集；同时固定窗口（n 或 12 字）
+        #   不会再越过较短的术语（如"所述装置"里的"装置"）把紧随其后的真实术语
+        #   （如"流量调节阀"）的首字也盖掉，导致后者无法登记为引用基础。
+        #   —— 这正是"明明有引用基础却报缺失"的根因。
         suoshu_mask = [False] * text_len
+        ngram_mask = [False] * text_len
         for p in suoshu_positions:
+            if p + 2 < text_len:
+                ngram_mask[p + 2] = True
             if use_dynamic_truncate:
                 t = _extract_term_dynamic_truncate(
                     text, p + 2, bl_first_chars, bl_words, bl_lengths, max_len=DYN_MAX_LEN
@@ -620,10 +632,10 @@ def check_antecedent_basis(claims: dict, n: int, ignore_set: set,
                 suoshu_mask[k] = True
         # 先扫一遍"非所述"上下文中的 n 字 CJK 子串 → 记入定义集
         # 此处用 skip_noise=True 过滤掉含"的/在/是"等停用字的子串
-        # 预计算 next_suoshu[i] 用于 O(1) 重叠判断
+        # 预计算 next_suoshu[i] 用于 O(1) 重叠判断（基于只盖首字的 ngram_mask）
         next_suoshu = [text_len] * (text_len + 1)
         for i in range(text_len - 1, -1, -1):
-            next_suoshu[i] = i if suoshu_mask[i] else next_suoshu[i + 1]
+            next_suoshu[i] = i if ngram_mask[i] else next_suoshu[i + 1]
 
         for seg, idx in _sliding_cjk_ngrams(text, n, skip_noise=True):
             if seg in ignore_set:
