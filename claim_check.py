@@ -757,98 +757,6 @@ def check_antecedent_basis(claims: dict, n: int, ignore_set: set,
 
 
 # ─────────────────────────────────────────
-# 检查 6: 同一术语多种写法
-# ─────────────────────────────────────────
-def _similar(a: str, b: str) -> bool:
-    """简易相似：长度相同且仅 1 字不同。"""
-    if a == b:
-        return False
-    if len(a) == len(b):
-        diff = sum(1 for x, y in zip(a, b) if x != y)
-        return diff == 1
-    return False
-
-
-def check_term_consistency(claims: dict, n: int, ignore_set: set) -> list:
-    """
-    只收集「所述」后紧跟的 n 字 CJK 术语，在权利要求书范围内找出相似对
-    （长度相同且仅一字之差），作为"同一术语多种写法"疑点上报。
-
-    之所以只看「所述」后面：
-      • 这是权利要求书中"反向引用"的标准句式，"所述X"里的 X 必然是一个
-        已定义的术语，天然排除了 n 字滑窗扫全文带来的大量噪声；
-      • 代理人撰写时最常见的术语漂移（如"齿圈"/"齿环"）就发生在"所述"后。
-    """
-    ignore_set = set(ignore_set or ())
-    # term -> {count, first: (claim_no, para_idx, context)}
-    term_locs: dict = {}
-
-    for no in sorted(claims.keys()):
-        info = claims[no]
-        text = info.text
-        # 找所有"所述"且不在"权利要求N所述"引用公式里
-        suoshu_positions = [
-            m.start() for m in _SUOSHU_RE.finditer(text)
-            if not _is_in_citation_formula(text, m.start())
-        ]
-        for p in suoshu_positions:
-            # 紧跟"所述"的 n 个 CJK 字组成术语
-            term_chars = []
-            for k in range(p + 2, len(text)):
-                ch = text[k]
-                if _CJK_RE.match(ch):
-                    term_chars.append(ch)
-                    if len(term_chars) == n:
-                        break
-                else:
-                    break
-            if len(term_chars) < n:
-                continue
-            term = "".join(term_chars)
-            if term in ignore_set:
-                continue
-            # 含停用字（如"第一/两侧"）视为虚词序列，不参与术语一致性
-            if _is_noisy_ngram(term):
-                continue
-
-            if term not in term_locs:
-                start = max(0, p - 8)
-                end = min(len(text), p + 2 + n + 8)
-                ctx = text[start:end].replace("\n", " ")
-                term_locs[term] = {
-                    "count": 1,
-                    "first": (no, info.para_indices[0] if info.para_indices else -1, ctx),
-                }
-            else:
-                term_locs[term]["count"] += 1
-
-    results = []
-    seen_pairs = set()
-    terms = list(term_locs.keys())
-    for i, a in enumerate(terms):
-        for b in terms[i + 1:]:
-            if _similar(a, b):
-                pair = (a, b) if a < b else (b, a)
-                if pair in seen_pairs:
-                    continue
-                seen_pairs.add(pair)
-                loc = term_locs[a]["first"]
-                results.append({
-                    "kind": "term",
-                    "claim_no": loc[0],
-                    "para_idx": loc[1],
-                    "context": loc[2],
-                    "message": (
-                        f"发现相似术语『{a}』与『{b}』"
-                        f"（{a}:{term_locs[a]['count']}次 · {b}:{term_locs[b]['count']}次），"
-                        f"疑似同一术语多种写法"
-                    ),
-                    "suggestion": "",
-                })
-    return results
-
-
-# ─────────────────────────────────────────
 # 句号结尾检查
 # ─────────────────────────────────────────
 def check_claim_ending_punctuation(claims: dict) -> list:
@@ -878,7 +786,6 @@ def check_claim_ending_punctuation(claims: dict) -> list:
 # ─────────────────────────────────────────
 def run_all_checks(paragraphs, start_idx: int, end_idx: int,
                    n: int, ignore_set=None, vague_words=None,
-                   check_term: bool = False,
                    check_vague: bool = True,
                    use_dynamic_truncate: bool = False,
                    use_dynamic_fallback: bool = False,
@@ -892,8 +799,6 @@ def run_all_checks(paragraphs, start_idx: int, end_idx: int,
         n:            术语类检查的滑窗字数（2~6）
         ignore_set:   用户自定义忽略词集合（仅作用于术语类检查）
         vague_words:  覆盖默认 VAGUE_WORDBANK
-        check_term:   是否执行「术语不一致」检查；默认 False，因为该检查
-                      噪音较大，只有用户在 UI 中明确勾选时才会运行
         use_dynamic_truncate / use_dynamic_fallback / boundary_blacklist:
                       引用基础检查的两个降噪开关，详见 check_antecedent_basis
     """
@@ -936,8 +841,6 @@ def run_all_checks(paragraphs, start_idx: int, end_idx: int,
         use_dynamic_fallback=use_dynamic_fallback,
         boundary_blacklist=boundary_blacklist,
     ))
-    if check_term:
-        results.extend(check_term_consistency(claims, n, ignore_set or set()))
 
     # 按 claim_no、para_idx 排序以稳定输出
     def sort_key(r):
