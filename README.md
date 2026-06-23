@@ -29,7 +29,7 @@
 
 发行包位于 [Releases](https://github.com/vvangpc/mark123/releases) 页面，两种形式任选：
 
-### 🅰️ 安装版（推荐）`专利标记助手V3.9.1-安装版.exe` · 约 32 MB
+### 🅰️ 安装版（推荐）`mark123-Setup-vX.Y.Z.exe` · 约 32 MB
 
 - 双击运行 → 向导中**可自选安装目录** → 自动创建开始菜单 / 桌面快捷方式 → 控制面板可一键卸载
 - 勾选「文件关联」后，**右键任意 `.docx` 文件即可看到「用专利标记助手打开」**，点击后软件启动并自动导入该文档，可直接一键检查
@@ -276,7 +276,7 @@ iscc installer.iss
 # 或在 Inno Setup Compiler 里打开 installer.iss → Build
 ```
 
-产物：`dist/专利标记助手V3.9.1-安装版.exe`（约 32 MB），具备：
+产物：`dist/mark123-Setup-vX.Y.Z.exe`（约 32 MB），具备：
 
 - 向导式自选安装目录
 - 开始菜单 / 桌面快捷方式

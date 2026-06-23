@@ -76,7 +76,8 @@ jobs:
         run: |
           Add-Type -AssemblyName System.Web
           $ver = '${{ steps.ver.outputs.version }}'
-          $exePath = "dist\专利标记助手V$ver-安装版.exe"
+          # ASCII 资产名：GitHub 会剥掉资产名里的中文，必须用 ASCII 名 URL 才稳定
+          $exePath = "dist\mark123-Setup-v$ver.exe"
           if (-not (Test-Path $exePath)) { throw "Installer not found: $exePath" }
 
           $exeName = Split-Path $exePath -Leaf

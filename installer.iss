@@ -4,7 +4,7 @@
 ;   2. 安装 Inno Setup 6 (https://jrsoftware.org/isdl.php)
 ;   3. 在 Inno Setup Compiler 里打开本文件 → Build → Compile
 ;      或命令行：iscc installer.iss
-;   4. 产物：dist\专利标记助手V3.5-安装版.exe
+;   4. 产物：dist\mark123-Setup-v3.5.exe
 
 #define MyAppName "专利标记助手"
 ; MyAppVersion 支持 CI 用 `iscc /DMyAppVersion=3.6 installer.iss` 命令行覆盖；
@@ -29,7 +29,10 @@ DefaultGroupName={#MyAppName}
 DisableProgramGroupPage=yes
 UninstallDisplayIcon={app}\{#MyAppExeName}
 OutputDir=dist
-OutputBaseFilename=专利标记助手V{#MyAppVersion}-安装版
+; 用 ASCII 文件名：GitHub Releases 会把资产名里的中文整段剥掉
+; （"专利标记助手V3.9.5-安装版.exe" 会变成 "V3.9.5-.exe"），导致 latest.json
+; 里按中文名拼出的下载 URL 404。ASCII 名可被原样保留，URL 才稳定可达。
+OutputBaseFilename=mark123-Setup-v{#MyAppVersion}
 Compression=lzma2/ultra
 SolidCompression=yes
 WizardStyle=modern
