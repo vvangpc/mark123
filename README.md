@@ -1,4 +1,4 @@
-# 📌 专利标记助手 V3.9.1
+# 📌 专利标记助手 V3.9.6
 
 一款为专利代理人 / 审查员打造的桌面端 `.docx` 处理工具。围绕「撰写 → 自查 → 标注 → 生成」全链路，
 把 **附图标记自动标注、文本清洗、错别字 / 重复字词检查、权利要求书引用审查** 集成到一个 PyQt6 界面里。
@@ -6,7 +6,7 @@
 底层通过直接操作 `<w:t>` XML 节点实现**格式安全**：MathType / AxMath 公式、形状、图片、样式等对象
 在所有自动化操作后都完整保留，不会被破坏。
 
-![Python](https://img.shields.io/badge/Python-3.10%2B-blue) ![UI](https://img.shields.io/badge/PyQt6-GUI-green) ![docx](https://img.shields.io/badge/python--docx-XML--safe-orange) ![Release](https://img.shields.io/badge/Release-V3.9.1-brightgreen)
+![Python](https://img.shields.io/badge/Python-3.10%2B-blue) ![UI](https://img.shields.io/badge/PyQt6-GUI-green) ![docx](https://img.shields.io/badge/python--docx-XML--safe-orange) ![Release](https://img.shields.io/badge/Release-V3.9.6-brightgreen)
 
 ---
 
@@ -36,12 +36,16 @@
 
 > 右键菜单走 `SystemFileAssociations\.docx\shell` 注册，不会抢占 Word 的默认打开行为，仅追加一个菜单项；卸载时自动清理注册表。
 
-### 🅱️ 单文件版 `专利标记助手V3.9.1-单文件版.exe` · 约 44 MB
+### 🅱️ 单文件版 `专利标记助手-单文件版.exe` · 约 44 MB
 
 - 免安装，复制到任意位置双击即可运行
 - 启动时需解压到 `%TEMP%`，首次启动略慢（5–15 秒，带启动图遮挡）
 
 两个版本功能完全一致，选一个即可。
+
+> 🔄 **内置在线更新**：每次启动会自动从 GitHub Releases 检查新版本（HTTPS），
+> 发现新版后弹窗提示；点「立即更新」即自动下载安装包、校验 SHA256 后拉起安装程序。
+> 也可在右上角「⚙ 设置 → 🔄 检查更新」手动触发。更新源全程走 GitHub，无需任何自建服务器。
 
 ---
 
@@ -227,7 +231,7 @@ mark123/
 ├── annotator.py               # XML 级安全标注引擎
 ├── mark_extractor.py          # 附图标记 "1-齿圈" 等格式的识别
 ├── cleaner.py                 # 删「所述」/ 标点 / 孤立检测 / 错字&重复
-├── claim_check.py             # 权利要求书六项检查（纯函数，无 UI）
+├── claim_check.py             # 权利要求书七项检查（纯函数，无 UI）
 │
 ├── typo_wordbank.py           # 内置专利错别字词库（165+ 条）
 ├── wordbank_dialog.py         # 错别字词库编辑器
