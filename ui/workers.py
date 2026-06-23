@@ -9,10 +9,10 @@ import traceback
 
 from PyQt6.QtCore import pyqtSignal, QThread
 
-from annotator import (
+from core.annotator import (
     smart_annotate_section, smart_remove_section,
 )
-from cleaner import (
+from core.cleaner import (
     remove_suoshu, unify_halfwidth_punct, convert_fullwidth_to_halfwidth,
     detect_orphan_marks, fix_consecutive_punct, detect_orphan_figures,
     check_typos_wordbank, check_duplicate_words,

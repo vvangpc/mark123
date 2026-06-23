@@ -6,7 +6,7 @@ cleaner.py — 文本清洗功能模块
 """
 import re
 from functools import lru_cache
-from annotator import annotate_paragraph_safe, _build_xml_char_map
+from core.annotator import annotate_paragraph_safe, _build_xml_char_map
 
 # 权利要求序号行头（如 "1." / "2、" / "3．"）；与 claim_check._CLAIM_HEAD_RE 语义一致
 _CLAIM_HEAD_RE = re.compile(r'^\s*(\d+)\s*[\.\．\、]')
@@ -21,10 +21,10 @@ def _dup_pattern(min_len: int, max_len: int) -> re.Pattern:
 def _get_active_wordbank() -> list:
     """获取当前生效的词库（合并内置 + 用户自定义，每次调用都重新读取以反映最新修改）"""
     try:
-        from config_manager import get_merged_wordbank
+        from config.config_manager import get_merged_wordbank
         return get_merged_wordbank()
     except Exception:
-        from typo_wordbank import WORDBANK
+        from config.typo_wordbank import WORDBANK
         return WORDBANK
 
 

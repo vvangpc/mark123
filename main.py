@@ -12,10 +12,10 @@ from PyQt6.QtWidgets import QApplication
 from PyQt6.QtGui import QFont
 from PyQt6.QtCore import QTimer
 
-from main_window import MainWindow
-from styles import LIGHT_THEME_QSS
+from ui.main_window import MainWindow
+from ui.styles import LIGHT_THEME_QSS
 from version import __version__
-from single_instance import try_send_to_running, install_listener
+from infra.single_instance import try_send_to_running, install_listener
 
 
 def _close_pyi_splash():
@@ -72,7 +72,7 @@ def main():
 
     # 启动 1.5s 后后台检查更新；frozen 产物默认开，dev 模式默认关
     # —— 句柄挂在 window 上避免被 gc，window 销毁时同步销毁
-    from updater import UpdateChecker, should_check
+    from infra.updater import UpdateChecker, should_check
     if should_check():
         window._update_checker = UpdateChecker(window, __version__)
         QTimer.singleShot(1500, window._update_checker.start)

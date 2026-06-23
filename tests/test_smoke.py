@@ -5,14 +5,16 @@ test_smoke.py — 主窗口冒烟测试
 核心 worker 类可从 workers 模块正常导入。用于重构过程中的快速回归。
 
 运行：
-    uv run python test_smoke.py
+    python tests/test_smoke.py
 """
 import os
 import sys
 
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 
 def test_workers_import():
-    from workers import (
+    from ui.workers import (
         _longest_nonspace_run,
         AnnotateWorker, CleanWorker,
     )
@@ -24,7 +26,7 @@ def test_workers_import():
 
 def test_main_window_construct():
     from PyQt6.QtWidgets import QApplication
-    from main_window import MainWindow
+    from ui.main_window import MainWindow
 
     app = QApplication.instance() or QApplication(sys.argv)
     win = MainWindow()
@@ -49,7 +51,7 @@ def test_main_window_construct():
 def test_load_sample_docx():
     """如果项目根目录存在样本 docx，额外加载一份验证 doc_data 结构。"""
     from PyQt6.QtWidgets import QApplication
-    from main_window import MainWindow
+    from ui.main_window import MainWindow
 
     samples = [f for f in os.listdir(".") if f.endswith(".docx") and "初稿" in f]
     if not samples:

@@ -847,37 +847,3 @@ def run_all_checks(paragraphs, start_idx: int, end_idx: int,
         return (r.get("claim_no") or 0, r.get("para_idx") or 0, r.get("kind") or "")
     results.sort(key=sort_key)
     return results
-
-
-# ─────────────────────────────────────────
-# 段落写回辅助（供 main_window 使用）
-# ─────────────────────────────────────────
-def set_paragraph_text(paragraph, new_text: str) -> bool:
-    """
-    把一个段落的可见文本整体覆盖为 new_text，
-    同时尽量保留段落中的非文本节点（公式、图片等）。
-    实现策略：把所有 w:t 节点的文字清空，再把 new_text 全部写到首个 w:t。
-
-    返回: 是否发生了实际改动
-    """
-    # 先收集所有 w:t 节点
-    wt_nodes = []
-    for run in paragraph.runs:
-        for wt in run._r.xpath('.//w:t'):
-            wt_nodes.append(wt)
-
-    # 计算旧文本
-    old_text = "".join((wt.text or "") for wt in wt_nodes)
-    if old_text == new_text:
-        return False
-
-    if not wt_nodes:
-        # 整段没有任何 w:t：通过 add_run 插入
-        paragraph.add_run(new_text)
-        return True
-
-    # 写入首节点，其他清空
-    wt_nodes[0].text = new_text
-    for wt in wt_nodes[1:]:
-        wt.text = ""
-    return True

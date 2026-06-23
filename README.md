@@ -216,32 +216,43 @@ C:\Users\<用户名>\AppData\Local\PatentMarker\MarkAssistant\
 ```
 mark123/
 ├── main.py                    # 程序入口（支持 sys.argv[1] 自动载入文件）
-├── main_window.py             # 主窗口：四大 Tab 构建、事件协调、历史面板
-├── workers.py                 # 后台线程：AnnotateWorker / CleanWorker / ToastWidget
-├── styles.py                  # 浅色 / 深色主题 QSS
+├── version.py                 # 版本号唯一真源（CI 据此发版）
 │
-├── doc_parser.py              # docx 五书分段解析（权利要求书 / 说明书 / ...）
-├── annotator.py               # XML 级安全标注引擎
-├── mark_extractor.py          # 附图标记 "1-齿圈" 等格式的识别
-├── cleaner.py                 # 删「所述」/ 标点 / 孤立检测 / 错字&重复
-├── claim_check.py             # 权利要求书六项检查（纯函数，无 UI）
+├── core/                      # 纯逻辑层（无 PyQt 依赖）
+│   ├── doc_parser.py          # docx 五书分段解析（权利要求书 / 说明书 / ...）
+│   ├── claim_check.py         # 权利要求书六项检查（纯函数）
+│   ├── cleaner.py             # 删「所述」/ 标点 / 孤立检测 / 错字&重复
+│   ├── annotator.py           # XML 级安全标注引擎
+│   ├── mark_extractor.py      # 附图标记 "1-齿圈" 等格式的识别
+│   └── paragraph_edit.py      # 段落级格式安全写回（set_paragraph_text）
 │
-├── typo_wordbank.py           # 内置专利错别字词库（165+ 条）
-├── wordbank_dialog.py         # 错别字词库编辑器
-├── dialogs/
-│   └── base_wordbank_dialog.py  # 三个同构忽略词对话框的公共基类
-├── dup_ignore_dialog.py       # 重复字词忽略词库编辑器
-├── claim_ignore_dialog.py     # 不确定用语词库编辑器
-├── boundary_blacklist_dialog.py # 引用基础边界黑名单
+├── config/                    # 配置与词库
+│   ├── config_manager.py      # QSettings + JSON 持久化封装
+│   └── typo_wordbank.py       # 内置专利错别字词库（165+ 条）
 │
-├── config_manager.py          # QSettings + JSON 持久化封装
-├── single_instance.py         # 单实例守卫：QLocalServer 命名管道 IPC
+├── ui/                        # PyQt6 界面层
+│   ├── main_window.py         # 主窗口：Tab 构建、事件协调、历史面板
+│   ├── workers.py             # 后台线程：AnnotateWorker / CleanWorker
+│   ├── styles.py              # 浅色 / 深色主题 QSS
+│   └── dialogs/               # 词库 / 忽略表编辑器
+│       ├── base_wordbank_dialog.py       # 同构忽略词对话框公共基类
+│       ├── wordbank_dialog.py            # 错别字词库编辑器
+│       ├── dup_ignore_dialog.py          # 重复字词忽略词库编辑器
+│       ├── claim_ignore_dialog.py        # 不确定用语词库编辑器
+│       └── boundary_blacklist_dialog.py  # 引用基础边界黑名单
+│
+├── infra/                     # 基础设施
+│   ├── updater.py             # GitHub Releases 在线更新
+│   └── single_instance.py     # 单实例守卫：QLocalServer 命名管道 IPC
+│
+├── tests/                     # 回归测试
+│   ├── test_smoke.py          # 主窗口冒烟测试
+│   └── test_claim_check.py    # 权项引用基础检查回归
 │
 ├── build.py                   # PyInstaller 打包脚本（onedir / onefile）
 ├── installer.iss              # Inno Setup 6 安装版脚本（右键菜单 + 自选目录）
 ├── make_ico.py                # app_icon.png → .ico 多尺寸生成
 ├── app_icon.png / app_icon.ico
-├── test_smoke.py              # 最小冒烟测试
 └── pyproject.toml / uv.lock
 ```
 

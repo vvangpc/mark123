@@ -4,8 +4,8 @@ dup_ignore_dialog.py — 重复字词忽略词库编辑器
 - 用户添加到此列表中的字 / 词，将在「重复字词检查」中被忽略
 - 支持搜索 / 添加 / 删除 / 导入 / 导出
 """
-from config_manager import load_dup_ignore_list, save_dup_ignore_list
-from dialogs.base_wordbank_dialog import BaseWordbankDialog
+from config.config_manager import load_dup_ignore_list, save_dup_ignore_list
+from ui.dialogs.base_wordbank_dialog import BaseWordbankDialog
 
 
 class DupIgnoreDialog(BaseWordbankDialog):
