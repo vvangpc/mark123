@@ -86,6 +86,7 @@ class AnnotateWorker(QThread):
 
             do_claims = self.scope in ("all", "claims")
             do_impl = self.scope in ("all", "implementation")
+            do_spec = self.scope == "spec"
 
             if do_claims and '权利要求书' in sections:
                 section = sections['权利要求书']
@@ -103,17 +104,39 @@ class AnnotateWorker(QThread):
                 else:
                     impl_count = smart_remove_section(paragraphs, section, self.marks, mode="implementation")
 
+            # 仅说明书：对说明书正文（发明内容 + 具体实施方式）做 implementation 风格标注。
+            # 排除「附图说明」——标记定义 "1-齿圈" 在此，标注会把它误改成 "1-齿圈1"；
+            # 技术领域 / 背景技术一般不含本发明部件名，亦不纳入。
+            spec_count = 0
+            if do_spec:
+                for name in ("发明内容", "具体实施方式"):
+                    if name not in sections:
+                        continue
+                    section = sections[name]
+                    if self.action == "add":
+                        c = smart_annotate_section(paragraphs, section, self.marks, mode="implementation")
+                    else:
+                        c = smart_remove_section(paragraphs, section, self.marks, mode="implementation")
+                    spec_count += c if (c and c > 0) else 0
+
             self.progress.emit(100)
 
-            summary, detail = self._build_messages(claims_count, impl_count)
+            summary, detail = self._build_messages(claims_count, impl_count, spec_count)
             self.finished.emit(summary, detail)
 
         except Exception as e:
             self.error.emit(f"操作失败：{str(e)}\n{traceback.format_exc()}")
 
-    def _build_messages(self, claims_count, impl_count):
+    def _build_messages(self, claims_count, impl_count, spec_count=0):
         action_name = "标注" if self.action == "add" else "删除标记"
         parts = []
+
+        if self.scope == "spec":
+            if spec_count <= 0:
+                parts.append(f"说明书：未找到需{action_name}的内容（或已全部处理）")
+            else:
+                parts.append(f"说明书（发明内容 / 具体实施方式）：成功{action_name} {spec_count} 段")
+            return f"{action_name}（说明书）", "\n".join(parts)
 
         if self.scope in ("all", "claims"):
             if claims_count == -1:
@@ -565,6 +588,14 @@ class MainWindow(QMainWindow):
         self.annotate_impl_btn.setEnabled(False)
         self.annotate_impl_btn.clicked.connect(lambda: self._on_annotate_section("implementation"))
         action_layout.addWidget(self.annotate_impl_btn)
+
+        self.annotate_spec_btn = QPushButton("📘 仅标注说明书")
+        self.annotate_spec_btn.setObjectName("accentBtn")
+        self.annotate_spec_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.annotate_spec_btn.setEnabled(False)
+        self.annotate_spec_btn.setToolTip("对说明书正文（发明内容 + 具体实施方式）按 实施方式 风格标注；适用于只导入说明书的情况")
+        self.annotate_spec_btn.clicked.connect(lambda: self._on_annotate_section("spec"))
+        action_layout.addWidget(self.annotate_spec_btn)
 
         self.remove_marks_btn = QPushButton("🧹 删除所有标记")
         self.remove_marks_btn.setObjectName("dangerBtn")
@@ -1333,6 +1364,7 @@ class MainWindow(QMainWindow):
             self.annotate_btn.setEnabled(True)
             self.annotate_claims_btn.setEnabled(True)
             self.annotate_impl_btn.setEnabled(True)
+            self.annotate_spec_btn.setEnabled(True)
             self.remove_marks_btn.setEnabled(True)
             self.refresh_marks_btn.setEnabled(True)
             self.confirm_marks_btn.setEnabled(True)
@@ -1468,13 +1500,20 @@ class MainWindow(QMainWindow):
         self._start_annotate_worker(action="remove", scope="all")
 
     def _on_annotate_section(self, mode: str):
-        """单独标注某个章节（mode: 'claims' 或 'implementation'）"""
-        section_name = "权利要求书" if mode == "claims" else "具体实施方式"
+        """单独标注某个章节（mode: 'claims' / 'implementation' / 'spec'）"""
         if not self._validate_before_annotate():
             return
-        if section_name not in self.doc_data['sections']:
-            self._show_toast(f"未找到 {section_name} 章节！", "error")
-            return
+        sections = self.doc_data['sections']
+        if mode == "spec":
+            # 仅说明书：发明内容 / 具体实施方式 任一存在即可
+            if not any(n in sections for n in ("发明内容", "具体实施方式")):
+                self._show_toast("未找到说明书正文章节（发明内容 / 具体实施方式）！", "error")
+                return
+        else:
+            section_name = "权利要求书" if mode == "claims" else "具体实施方式"
+            if section_name not in sections:
+                self._show_toast(f"未找到 {section_name} 章节！", "error")
+                return
         self._start_annotate_worker(action="add", scope=mode)
 
     def _start_annotate_worker(self, action: str, scope: str):
@@ -1487,7 +1526,7 @@ class MainWindow(QMainWindow):
         self._sync_marks_from_editor()
 
         action_name = "标注" if action == "add" else "删除标记"
-        scope_name = {"all": "全文", "claims": "权利要求书", "implementation": "具体实施方式"}[scope]
+        scope_name = {"all": "全文", "claims": "权利要求书", "implementation": "具体实施方式", "spec": "说明书"}[scope]
 
         self._log("=" * 50)
         self._log(f"🚀 开始{action_name}（{scope_name}）...")
@@ -1792,6 +1831,7 @@ class MainWindow(QMainWindow):
         self.annotate_btn.setEnabled(enabled)
         self.annotate_claims_btn.setEnabled(enabled)
         self.annotate_impl_btn.setEnabled(enabled)
+        self.annotate_spec_btn.setEnabled(enabled)
         self.remove_marks_btn.setEnabled(enabled)
         self.confirm_marks_btn.setEnabled(enabled)
         self.refresh_marks_btn.setEnabled(enabled)

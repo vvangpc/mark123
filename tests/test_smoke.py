@@ -69,8 +69,66 @@ def test_load_sample_docx():
     win.close()
 
 
+def _all_texts(win):
+    return [p.text for p in win.doc_data["paragraphs"]]
+
+
+def test_spec_only_document():
+    """仅说明书（无权利要求书）也能导入、提取标记，并对说明书正文标注，
+    且不破坏「附图说明」里的标记定义。"""
+    import tempfile
+    from docx import Document
+    from PyQt6.QtWidgets import QApplication
+    from ui.main_window import MainWindow, AnnotateWorker  # 用主窗口内联 worker（含 scope='spec'）
+
+    tmpdir = tempfile.mkdtemp()
+    path = os.path.join(tmpdir, "spec_only.docx")
+    doc = Document()
+    for line in (
+        "技术领域",
+        "本实用新型涉及一种夹持装置。",
+        "附图说明",
+        "1-齿圈，2-夹指",
+        "具体实施方式",
+        "如图1所示，所述齿圈固定连接夹指。",
+    ):
+        doc.add_paragraph(line)
+    doc.save(path)
+
+    app = QApplication.instance() or QApplication(sys.argv)
+    win = MainWindow()
+    win._load_document(path)
+
+    # 1) 正常加载、且不含权利要求书
+    assert win.doc_data is not None, "仅说明书文档应能成功加载"
+    assert "权利要求书" not in win.doc_data["sections"], "样例不应含权利要求书"
+    assert win._claim_loaded is False, "无权项时权项检查应保持未加载状态"
+
+    # 2) 从「附图说明」提取到 2 个标记
+    assert len(win.current_marks) == 2, f"应提取到 2 个标记，实际 {win.current_marks}"
+    assert "齿圈" in win.current_marks.values() and "夹指" in win.current_marks.values()
+
+    # 3) scope='spec' 标注：具体实施方式被标注，附图说明定义不被破坏
+    worker = AnnotateWorker(win.doc_data, win.current_marks, action="add", scope="spec")
+    worker.run()  # 同步执行（不开线程）
+    texts = _all_texts(win)
+    impl_text = next(t for t in texts if "固定连接" in t)
+    assert "齿圈1" in impl_text and "夹指2" in impl_text, f"说明书正文应被标注：{impl_text!r}"
+    def_text = next(t for t in texts if "1-齿圈" in t)
+    assert def_text.strip() == "1-齿圈，2-夹指", f"附图说明标记定义不应被标注破坏：{def_text!r}"
+
+    win.close()
+    try:
+        os.remove(path)
+        os.rmdir(tmpdir)
+    except OSError:
+        pass
+    print("[OK] spec-only document loads, extracts marks, annotates spec body safely")
+
+
 if __name__ == "__main__":
     test_workers_import()
     test_main_window_construct()
     test_load_sample_docx()
+    test_spec_only_document()
     print("\nAll smoke tests passed.")
