@@ -3,19 +3,19 @@
 updater.py — 客户端自动更新
 
 工作流：
-  1. 启动 1.5 秒后后台线程 GET FALLBACK_URL（GitHub HTTPS）→ 失败 fallback PRIMARY_URL（VPS HTTP）
+  1. 启动 1.5 秒后后台线程 GET latest.json（GitHub Releases，HTTPS）
   2. 拿到 latest.json，与本地 __version__ 比较；新版 → 主线程弹窗
-  3. 用户确认 → 下载 Inno 安装包到 %TEMP% → SHA256 校验 → ShellExecute 启动 → 当前 app 退出
+  3. 用户确认 → 从 GitHub Releases 下载 Inno 安装包到 %TEMP% → SHA256 校验 → ShellExecute 启动 → 当前 app 退出
 
 设计取舍：
   · 不引入 requests / packaging 依赖，全用 stdlib（urllib + hashlib），避免 PyInstaller 排除列表越来越长
+  · 元数据与安装包统一走 GitHub Releases（HTTPS，全球可达），不依赖自建 VPS
   · 仅在 frozen 产物里默认启用；开发模式 (python main.py) 静默跳过，加 env MARK123_UPDATE_CHECK_DEV=1 可强制开
   · 网络 IO 全在 daemon 线程，UI 全在主线程，靠 pyqtSignal 跨线程传递结果
   · 任何网络/解析错误都静默吞掉，绝不打扰用户
 
 落地前要改的地方：
-  · PRIMARY_URL —— 改成你的 VPS 真实域名（建议 HTTPS）
-  · GITHUB_REPO —— 已对，无需改
+  · GITHUB_REPO —— 改成你的 GitHub 仓库（owner/repo），其余无需改
 """
 from __future__ import annotations
 
@@ -34,16 +34,12 @@ from PyQt6.QtCore import QObject, QSettings, Qt, pyqtSignal
 from PyQt6.QtWidgets import QMessageBox, QProgressDialog, QWidget, QApplication
 
 # ─────────────────────── 配置 ───────────────────────
-# 元数据 (latest.json) 优先走 GitHub HTTPS（见 _fetch_latest）：
-# latest.json 含下载 URL + sha256，若走 HTTP 可被中间人连哈希一起替换。
-# VPS HTTP 源仅在 GitHub 不可达时兜底；下载 exe 仍优先走 VPS 提速，
-# 安全性由 HTTPS 元数据中的 sha256 强制校验保证。
-# 注：URL 不带 /mark123/ 前缀，因为 nginx 的 root 已经设到 /var/www/mark123
-PRIMARY_URL = "http://107.172.180.160/latest.json"
-
-# GitHub Releases 的 "latest" 别名（HTTPS）
+# 元数据 (latest.json) 与安装包都走 GitHub Releases（HTTPS）：
+# latest.json 含下载 URL + sha256，HTTPS 保证元数据不被中间人篡改，
+# 下载到的安装包再用其中的 sha256 强制校验。
 GITHUB_REPO = "vvangpc/mark123"
-FALLBACK_URL = f"https://github.com/{GITHUB_REPO}/releases/latest/download/latest.json"
+# GitHub Releases 的 "latest" 别名 → 永远指向最新一次 Release 的 latest.json
+LATEST_JSON_URL = f"https://github.com/{GITHUB_REPO}/releases/latest/download/latest.json"
 
 HTTP_TIMEOUT = 5            # 检查阶段
 DOWNLOAD_TIMEOUT = 60        # 下载阶段（连接超时；读不超时由 read 阻塞）
@@ -59,8 +55,8 @@ _APP = "MarkAssistant"
 @dataclass
 class UpdateInfo:
     version: str
-    url: str          # VPS 直链
-    url_github: str   # GitHub Releases 直链（备用）
+    url: str          # 主下载直链（现指向 GitHub Releases；历史版本可能是 VPS）
+    url_github: str   # GitHub Releases 直链
     sha256: str
     size: int
     notes: str
@@ -121,23 +117,19 @@ class _CheckWorker(QObject):
 
 
 def _fetch_latest() -> Optional[UpdateInfo]:
-    """元数据优先走 GitHub（HTTPS），VPS（HTTP）只做兜底。
+    """从 GitHub Releases 的 latest.json 拉取更新元数据（HTTPS）。
 
-    latest.json 里包含下载 URL 和 sha256 —— 若元数据本身走 HTTP，
-    中间人可以同时替换下载链和哈希值，校验就形同虚设。
-    HTTPS 元数据 + 强制 sha256 校验后，下载 exe 仍可走 HTTP VPS 提速。
-    任何异常都吞掉返回 None。
+    latest.json 里包含下载 URL 和 sha256；走 HTTPS 保证元数据不被篡改，
+    下载到的安装包再用其中的 sha256 强制校验。任何异常都吞掉返回 None。
     """
-    for url in (FALLBACK_URL, PRIMARY_URL):
-        try:
-            req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
-            with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT) as resp:
-                data = json.loads(resp.read().decode("utf-8"))
-            return UpdateInfo.from_json(data)
-        except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError,
-                json.JSONDecodeError, KeyError, ValueError, OSError):
-            continue
-    return None
+    try:
+        req = urllib.request.Request(LATEST_JSON_URL, headers={"User-Agent": USER_AGENT})
+        with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+        return UpdateInfo.from_json(data)
+    except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError,
+            json.JSONDecodeError, KeyError, ValueError, OSError):
+        return None
 
 
 # ─────────────────────── 主入口 ───────────────────────
@@ -260,10 +252,12 @@ def _download_and_launch(parent: QWidget, info: UpdateInfo) -> None:
     sha = hashlib.sha256()
     bytes_done = 0
 
-    # 优先 url（latest.json 里写的主下载源），失败 fallback url_github；去重避免重试同一个地址
+    # 安装包从 GitHub Releases 拉取：新版 latest.json 里 url / url_github 都指向
+    # GitHub，去重后只尝试一次。仍读双字段是为兼容历史 latest.json——旧版 url 可能
+    # 是已下线的 VPS，故把 GitHub 的 url_github 放在最前优先，url 仅作最后兜底。
     seen: set = set()
     urls: list = []
-    for u in (info.url, info.url_github):
+    for u in (info.url_github, info.url):
         if u and u not in seen:
             urls.append(u)
             seen.add(u)

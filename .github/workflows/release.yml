@@ -102,17 +102,14 @@ jobs:
           }
           if (-not $notes) { $notes = "查看 https://github.com/${{ github.repository }}/releases/tag/v$ver" }
 
-          # 双源分发：
-          #   url        → VPS IP 直连（HTTP，CN 速度快），由本 workflow 通过 SCP 推送
-          #   url_github → GitHub Releases（HTTPS，全球可达），VPS 不可达时兜底
-          # 即使 VPS HTTP 链路被中间人篡改，updater.py 会用 latest.json 里的 sha256 校验拦下
-          # 注：URL 不带 /mark123/ 前缀，nginx root 直接对应 /var/www/mark123
-          $vpsBase = "http://${{ secrets.VPS_HOST }}"
+          # 单源分发：安装包与 latest.json 都发布在 GitHub Releases（HTTPS，全球可达）。
+          #   url / url_github 均指向 GitHub Releases 直链；updater.py 用其中的 sha256 强制校验。
+          # （历史上曾用自建 VPS 双源加速，VPS 下线后改为纯 GitHub。）
           $ghBase = "https://github.com/${{ github.repository }}/releases/download/v$ver"
 
           $latest = [ordered]@{
             version     = $ver
-            url         = "$vpsBase/$exeNameUrl"
+            url         = "$ghBase/$exeNameUrl"
             url_github  = "$ghBase/$exeNameUrl"
             sha256      = $sha
             size        = $size
@@ -135,55 +132,6 @@ jobs:
             dist/latest.json
           generate_release_notes: true
           fail_on_unmatched_files: true
-
-      # ── 把 .exe 和 latest.json 通过 SCP 推送到 VPS ──
-      # 用 windows-latest 自带的 OpenSSH（PowerShell 直接调 scp），不依赖 Docker action
-      # 注：GitHub Actions 不允许 step 级 if: 直接读 secrets，且我们已经依赖 VPS 必须存在，
-      # 没配 secrets 这步会自然失败，不需要 if 条件
-      - name: Deploy to VPS via SCP
-        shell: pwsh
-        env:
-          VPS_HOST: ${{ secrets.VPS_HOST }}
-          VPS_USER: ${{ secrets.VPS_USER }}
-          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
-        run: |
-          $exePath = "${{ steps.meta.outputs.exe_path }}"
-          if (-not (Test-Path $exePath)) { throw "exe not found: $exePath" }
-
-          # 写入私钥到临时文件
-          $keyFile = Join-Path $env:RUNNER_TEMP "vps_deploy_key"
-          Set-Content -Path $keyFile -Value $env:VPS_SSH_KEY -NoNewline -Encoding ascii
-
-          # Windows OpenSSH 要求私钥文件权限只对当前用户开放
-          icacls $keyFile /inheritance:r | Out-Null
-          icacls $keyFile /grant:r "$($env:USERNAME):R" | Out-Null
-
-          # 用 ssh 先在 VPS 上确保目录存在（也顺带验证连通性）
-          $sshArgs = @(
-            "-i", $keyFile,
-            "-o", "StrictHostKeyChecking=no",
-            "-o", "UserKnownHostsFile=NUL",
-            "-o", "LogLevel=ERROR",
-            "$($env:VPS_USER)@$($env:VPS_HOST)",
-            "mkdir -p /var/www/mark123 && chmod 755 /var/www/mark123"
-          )
-          & ssh @sshArgs
-          if ($LASTEXITCODE -ne 0) { throw "ssh mkdir failed: $LASTEXITCODE" }
-
-          # 用 scp 上传 .exe 和 latest.json
-          $scpArgs = @(
-            "-i", $keyFile,
-            "-o", "StrictHostKeyChecking=no",
-            "-o", "UserKnownHostsFile=NUL",
-            "-o", "LogLevel=ERROR",
-            $exePath,
-            "dist/latest.json",
-            "$($env:VPS_USER)@$($env:VPS_HOST):/var/www/mark123/"
-          )
-          & scp @scpArgs
-          if ($LASTEXITCODE -ne 0) { throw "scp failed: $LASTEXITCODE" }
-
-          Write-Host "Deployed to http://$($env:VPS_HOST)/mark123/"
 
       - name: Upload build artifact (always)
         uses: actions/upload-artifact@v4
