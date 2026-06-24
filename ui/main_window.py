@@ -441,10 +441,12 @@ class MainWindow(QMainWindow):
         right_col = QVBoxLayout()
         right_col.setSpacing(8)
 
+        # 「标记」模块的操作按钮组放进右侧第二列（4列）；其余模块第二列仍是子功能列表。
+        self.mark_actions_panel = self._create_mark_actions()
         self.nav_panel = NavPanel([
-            ("📌 标记", [("附图标记标注", 0)]),
+            ("📌 标记", self.mark_actions_panel, 0),
             ("🧹 清洗", [("删除“所述”", 1), ("标点检查", 2), ("孤立标记检测", 3)]),
-            ("📝 错别字", [("错别字 / 重复字", 4)]),
+            ("📝 错别字", self._build_typo_nav(), 4),  # 控件型：4列放 检查/词库 按钮
             ("⚖️ 权项", [("权利要求书检查", 5)]),
         ])
         self.nav_panel.page_selected.connect(self.panel_stack.setCurrentIndex)
@@ -500,13 +502,13 @@ class MainWindow(QMainWindow):
         self.status_bar.addPermanentWidget(self.progress_bar)
 
     def _create_mark_tab(self) -> QWidget:
-        """创建标记提取与标注标签页"""
+        """左下（2框）「标记」面板：只保留「附图标记字典」。
+        所有标记操作按钮已移至右侧第二列（4列），见 _create_mark_actions()。"""
         widget = QWidget()
         layout = QVBoxLayout(widget)
         layout.setContentsMargins(0, 8, 0, 0)
-        layout.setSpacing(12)
+        layout.setSpacing(8)
 
-        # ── 上方: 标记字典编辑区 ──────────────────────────
         marks_group = QGroupBox("📌 附图标记字典（自动提取，可手动编辑）")
         marks_layout = QVBoxLayout(marks_group)
 
@@ -515,11 +517,24 @@ class MainWindow(QMainWindow):
             "打开 docx 文件后将自动提取附图标记...\n"
             "格式示例: 1-齿圈，2-夹指，3-转盘，4-定位销"
         )
-        self.marks_edit.setMaximumHeight(90)
-        marks_layout.addWidget(self.marks_edit)
+        marks_layout.addWidget(self.marks_edit, 1)
 
-        # 标记操作按钮行
-        marks_btn_row = QHBoxLayout()
+        self.mark_count_label = QLabel("")
+        self.mark_count_label.setObjectName("subtitleLabel")
+        marks_layout.addWidget(self.mark_count_label)
+
+        layout.addWidget(marks_group, 1)
+        return widget
+
+    def _create_mark_actions(self) -> QWidget:
+        """右侧第二列（4列）的「标记」操作按钮组（竖排）。
+        顺序：重新确认标记 / 重新提取标记 / 一键标注 / 仅标注权利要求书 /
+              仅标注具体实施方式 / 删除所有标记 / 清空标记。
+        （附图标记字典留在左下 2框，见 _create_mark_tab()。）"""
+        widget = QWidget()
+        layout = QVBoxLayout(widget)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(8)
 
         self.confirm_marks_btn = QPushButton("✅  重新确认标记")
         self.confirm_marks_btn.setObjectName("primaryBtn")
@@ -527,13 +542,7 @@ class MainWindow(QMainWindow):
         self.confirm_marks_btn.setEnabled(False)
         self.confirm_marks_btn.setToolTip("将编辑框中的词典写回内存中的附图标记段落，并记入操作历史")
         self.confirm_marks_btn.clicked.connect(self._on_confirm_marks)
-        marks_btn_row.addWidget(self.confirm_marks_btn)
-
-        self.mark_count_label = QLabel("")
-        self.mark_count_label.setObjectName("subtitleLabel")
-        marks_btn_row.addWidget(self.mark_count_label)
-
-        marks_btn_row.addStretch()
+        layout.addWidget(self.confirm_marks_btn)
 
         self.refresh_marks_btn = QPushButton("🔄  重新提取标记")
         self.refresh_marks_btn.setObjectName("primaryBtn")
@@ -541,20 +550,7 @@ class MainWindow(QMainWindow):
         self.refresh_marks_btn.setEnabled(False)
         self.refresh_marks_btn.setToolTip("从原始 docx 文档重新提取附图标记到编辑框")
         self.refresh_marks_btn.clicked.connect(self._on_refresh_marks)
-        marks_btn_row.addWidget(self.refresh_marks_btn)
-
-        self.clear_marks_btn = QPushButton("🗑️ 清空标记")
-        self.clear_marks_btn.setObjectName("dangerBtn")
-        self.clear_marks_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.clear_marks_btn.clicked.connect(lambda: self.marks_edit.clear())
-        marks_btn_row.addWidget(self.clear_marks_btn)
-
-        marks_layout.addLayout(marks_btn_row)
-        layout.addWidget(marks_group)
-
-        # ── 中间: 操作行 ─────────────────────────────────
-        action_layout = QHBoxLayout()
-        action_layout.setSpacing(12)
+        layout.addWidget(self.refresh_marks_btn)
 
         self.annotate_btn = QPushButton("⚡  一键标注")
         self.annotate_btn.setObjectName("primaryBtn")
@@ -562,21 +558,21 @@ class MainWindow(QMainWindow):
         self.annotate_btn.setEnabled(False)
         self.annotate_btn.setToolTip("权利要求书 + 具体实施方式 全部自动标注（仅修改内存）")
         self.annotate_btn.clicked.connect(self._on_annotate)
-        action_layout.addWidget(self.annotate_btn)
+        layout.addWidget(self.annotate_btn)
 
         self.annotate_claims_btn = QPushButton("📋 仅标注权利要求书")
         self.annotate_claims_btn.setObjectName("accentBtn")
         self.annotate_claims_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.annotate_claims_btn.setEnabled(False)
         self.annotate_claims_btn.clicked.connect(lambda: self._on_annotate_section("claims"))
-        action_layout.addWidget(self.annotate_claims_btn)
+        layout.addWidget(self.annotate_claims_btn)
 
         self.annotate_impl_btn = QPushButton("📝 仅标注具体实施方式")
         self.annotate_impl_btn.setObjectName("accentBtn")
         self.annotate_impl_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.annotate_impl_btn.setEnabled(False)
         self.annotate_impl_btn.clicked.connect(lambda: self._on_annotate_section("implementation"))
-        action_layout.addWidget(self.annotate_impl_btn)
+        layout.addWidget(self.annotate_impl_btn)
 
         self.remove_marks_btn = QPushButton("🧹 删除所有标记")
         self.remove_marks_btn.setObjectName("dangerBtn")
@@ -584,13 +580,16 @@ class MainWindow(QMainWindow):
         self.remove_marks_btn.setEnabled(False)
         self.remove_marks_btn.setToolTip("基于标记字典，扫描并清洗正文中的编号（仅修改内存）")
         self.remove_marks_btn.clicked.connect(self._on_remove_marks)
-        action_layout.addWidget(self.remove_marks_btn)
+        layout.addWidget(self.remove_marks_btn)
 
-        action_layout.addStretch()
+        self.clear_marks_btn = QPushButton("🗑️ 清空标记")
+        self.clear_marks_btn.setObjectName("dangerBtn")
+        self.clear_marks_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.clear_marks_btn.setToolTip("清空左下「附图标记字典」编辑框")
+        self.clear_marks_btn.clicked.connect(lambda: self.marks_edit.clear())
+        layout.addWidget(self.clear_marks_btn)
 
-        layout.addLayout(action_layout)
         layout.addStretch(1)
-
         return widget
 
     def _wrap_card(self, card) -> QWidget:
@@ -717,6 +716,46 @@ class MainWindow(QMainWindow):
         v.addWidget(self.orphan_result_text, 1)
         return group
 
+    def _build_typo_nav(self) -> QWidget:
+        """错别字模块的 4列控件：错别字检查 / 重复字词检查 / 错别字词库 / 重复字忽略词库。"""
+        w = QWidget()
+        v = QVBoxLayout(w)
+        v.setContentsMargins(0, 0, 0, 0)
+        v.setSpacing(6)
+
+        self.typo_check_btn = QPushButton("🔍 错别字检查")
+        self.typo_check_btn.setObjectName("accentBtn")
+        self.typo_check_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.typo_check_btn.setEnabled(False)
+        self.typo_check_btn.clicked.connect(self._on_typo_check)
+        v.addWidget(self.typo_check_btn)
+
+        self.dup_check_btn = QPushButton("🔁 重复字词检查")
+        self.dup_check_btn.setObjectName("accentBtn")
+        self.dup_check_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.dup_check_btn.setEnabled(False)
+        self.dup_check_btn.clicked.connect(self._on_dup_check)
+        v.addWidget(self.dup_check_btn)
+
+        self.wb_btn = QPushButton()
+        self.wb_btn.setObjectName("smallBtn")
+        self.wb_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.wb_btn.setToolTip("打开错别字词库编辑器（可增删 / 导入 / 导出）")
+        self.wb_btn.clicked.connect(self._on_open_wordbank_dialog)
+        v.addWidget(self.wb_btn)
+
+        self.dup_ignore_btn = QPushButton()
+        self.dup_ignore_btn.setObjectName("smallBtn")
+        self.dup_ignore_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.dup_ignore_btn.setToolTip("打开「重复字词忽略词库」编辑器")
+        self.dup_ignore_btn.clicked.connect(self._on_open_dup_ignore_dialog)
+        v.addWidget(self.dup_ignore_btn)
+
+        v.addStretch()
+        self._refresh_wordbank_label()
+        self._refresh_dup_ignore_label()
+        return w
+
     def _create_typo_tab(self) -> QWidget:
         """创建错别字检查标签页"""
         widget = QWidget()
@@ -724,38 +763,8 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(0, 8, 0, 0)
         layout.setSpacing(10)
 
-        # ── 顶部：词库条（错别字词库 + 重复字词忽略词库 同一行）──
-        engine_group = QGroupBox("📖 词库")
-        engine_layout = QHBoxLayout(engine_group)
-        engine_layout.setSpacing(20)
-
-        wb_count = self._get_wordbank_count()
-        self.wb_label = _ClickableLabel()
-        self.wb_label.setTextFormat(Qt.TextFormat.RichText)
-        self.wb_label.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.wb_label.setToolTip("点击打开词库编辑器，可添加 / 修改 / 删除自定义词条")
-        self.wb_label.setText(
-            f"✅  错别字词库  —  已加载 <b>{wb_count}</b> 条规则  "
-            f"（<a href='#edit'>点击编辑词库</a>）"
-        )
-        # 整个标签可点；不再连接 linkActivated，避免点中链接区双开对话框
-        self.wb_label.clicked.connect(self._on_open_wordbank_dialog)
-        engine_layout.addWidget(self.wb_label)
-
-        # 重复字词忽略词库入口
-        self.dup_ignore_label = _ClickableLabel()
-        self.dup_ignore_label.setTextFormat(Qt.TextFormat.RichText)
-        self.dup_ignore_label.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.dup_ignore_label.setToolTip("点击打开「重复字词忽略词库」编辑器")
-        self.dup_ignore_label.clicked.connect(self._on_open_dup_ignore_dialog)
-        self._refresh_dup_ignore_label()
-        engine_layout.addWidget(self.dup_ignore_label)
-
-        engine_layout.addStretch()
-        layout.addWidget(engine_group)
-
-        # ── 中间：合并的检查区（错别字 / 重复字词共用一张表）─
-        action_group = QGroupBox("📝 错别字 / 重复字词检查")
+        # 检查 / 词库按钮在右侧 4列（见 _build_typo_nav）；本页（2框）只放结果表与「应用修改」
+        action_group = QGroupBox("📝 错别字 / 重复字词检查结果")
         action_v = QVBoxLayout(action_group)
 
         hint = QLabel(
@@ -766,24 +775,8 @@ class MainWindow(QMainWindow):
         hint.setWordWrap(True)
         action_v.addWidget(hint)
 
-        # 同一行：错别字检查 / 重复字词检查 / 计数 / 应用所有修改
+        # 同一行：计数 / 应用所有修改（错别字 / 重复字检查按钮已移到右侧 4列）
         btn_row = QHBoxLayout()
-
-        self.typo_check_btn = QPushButton("🔍  错别字检查")
-        self.typo_check_btn.setObjectName("accentBtn")
-        self.typo_check_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.typo_check_btn.setEnabled(False)
-        self.typo_check_btn.setToolTip("已检查过的结果会缓存，再次点击可在两种模式间切换显示")
-        self.typo_check_btn.clicked.connect(self._on_typo_check)
-        btn_row.addWidget(self.typo_check_btn)
-
-        self.dup_check_btn = QPushButton("🔁  重复字词检查")
-        self.dup_check_btn.setObjectName("accentBtn")
-        self.dup_check_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.dup_check_btn.setEnabled(False)
-        self.dup_check_btn.setToolTip("已检查过的结果会缓存，再次点击可在两种模式间切换显示")
-        self.dup_check_btn.clicked.connect(self._on_dup_check)
-        btn_row.addWidget(self.dup_check_btn)
 
         self.typo_count_label = QLabel("")
         self.typo_count_label.setObjectName("subtitleLabel")
@@ -1080,14 +1073,10 @@ class MainWindow(QMainWindow):
                 return 0
 
     def _refresh_wordbank_label(self):
-        """重新计算词库条目数并刷新右上角标签"""
-        if not hasattr(self, "wb_label"):
+        """刷新 4列「错别字词库」按钮文字（含条目数）"""
+        if not hasattr(self, "wb_btn"):
             return
-        wb_count = self._get_wordbank_count()
-        self.wb_label.setText(
-            f"✅  错别字词库  —  已加载 <b>{wb_count}</b> 条规则  "
-            f"（<a href='#edit'>点击编辑词库</a>）"
-        )
+        self.wb_btn.setText(f"📔 错别字词库 ({self._get_wordbank_count()})")
 
     def _on_open_wordbank_dialog(self):
         """打开词库编辑对话框"""
@@ -1105,18 +1094,15 @@ class MainWindow(QMainWindow):
         self._invalidate_typo_cache()
 
     def _refresh_dup_ignore_label(self):
-        """刷新重复字词忽略词库标签"""
-        if not hasattr(self, "dup_ignore_label"):
+        """刷新 4列「重复字忽略词库」按钮文字（含条目数）"""
+        if not hasattr(self, "dup_ignore_btn"):
             return
         try:
             from config.config_manager import load_dup_ignore_list
             n = len(load_dup_ignore_list())
         except Exception:
             n = 0
-        self.dup_ignore_label.setText(
-            f"🙈  重复字词忽略词库  —  <b>{n}</b> 条  "
-            f"（<a href='#edit'>点击编辑</a>）"
-        )
+        self.dup_ignore_btn.setText(f"🙈 重复字忽略词库 ({n})")
 
     def _on_open_dup_ignore_dialog(self):
         """打开「重复字词忽略词库」编辑对话框"""
