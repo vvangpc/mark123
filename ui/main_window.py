@@ -6,7 +6,7 @@ main_window.py — PyQt6 主窗口
 import os
 import traceback
 from PyQt6.QtWidgets import (
-    QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
+    QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QPushButton,
     QLabel, QTextEdit, QPlainTextEdit, QFileDialog, QMessageBox,
     QStatusBar, QProgressBar, QFrame, QSplitter, QTabWidget, QStackedWidget,
     QGroupBox, QApplication, QCheckBox, QDialog, QSpinBox, QAbstractSpinBox,
@@ -937,15 +937,7 @@ class MainWindow(QMainWindow):
         action_group = QGroupBox("📝 错别字 / 重复字词检查结果")
         action_v = QVBoxLayout(action_group)
 
-        hint = QLabel(
-            "在「建议修改」列编辑后，点右侧 4列的「应用所有修改」写入内存；"
-            "再到右侧「标记」点「💾 文件生成」生成最终文件。"
-        )
-        hint.setObjectName("subtitleLabel")
-        hint.setWordWrap(True)
-        action_v.addWidget(hint)
-
-        # 同一行：计数 / 应用所有修改（错别字 / 重复字检查按钮已移到右侧 4列）
+        # 计数行（检查 / 应用所有修改 按钮均在右侧 4列）
         btn_row = QHBoxLayout()
 
         self.typo_count_label = QLabel("")
@@ -1000,22 +992,21 @@ class MainWindow(QMainWindow):
         # 检查字数：6 个预设 + 自定义
         self._claim_n = 2
         v.addWidget(QLabel("检查字数"))
-        n_row = QHBoxLayout()
-        n_row.setSpacing(2)
+        n_grid = QGridLayout()
+        n_grid.setSpacing(3)
         self._claim_n_buttons = QButtonGroup(w)
         self._claim_n_buttons.setExclusive(True)
-        for val in (2, 3, 4, 5, 6, 7):
+        for i, val in enumerate((2, 3, 4, 5, 6, 7)):
             b = QPushButton(str(val))
             b.setCheckable(True)
             b.setCursor(Qt.CursorShape.PointingHandCursor)
             b.setObjectName("nPresetBtn")
-            b.setMaximumWidth(30)
             if val == 2:
                 b.setChecked(True)
             b.clicked.connect(lambda _=False, vv=val: self._on_claim_n_preset(vv))
             self._claim_n_buttons.addButton(b, val)
-            n_row.addWidget(b)
-        v.addLayout(n_row)
+            n_grid.addWidget(b, i // 2, i % 2)   # 两列：每行 2 个
+        v.addLayout(n_grid)
 
         custom_row = QHBoxLayout()
         custom_row.setSpacing(4)
