@@ -23,7 +23,7 @@ from core.mark_extractor import extract_marks_from_paragraph, extract_marks_from
 from core.annotator import smart_annotate_section, smart_remove_section
 from ui.styles import DARK_THEME_QSS, LIGHT_THEME_QSS
 from ui.content_area import ContentArea
-from ui.activity_bar import ActivityBar
+from ui.nav_panel import NavPanel
 from core.cleaner import (
     remove_suoshu, unify_halfwidth_punct, convert_fullwidth_to_halfwidth,
     detect_orphan_marks,
@@ -421,12 +421,15 @@ class MainWindow(QMainWindow):
         self.content_area = ContentArea()
         left_split.addWidget(self.content_area)
 
-        # 左下：各模块操作 / 结果面板（顺序须与 ActivityBar 一致）
+        # 左下：各「子功能」面板（每页一个子功能，由右侧两列导航切换；
+        #        索引须与 NavPanel 的 page_index 对应）
         self.panel_stack = QStackedWidget()
-        self.panel_stack.addWidget(self._create_mark_tab())          # 0 标记提取与标注
-        self.panel_stack.addWidget(self._create_clean_tab())         # 1 文本清洗
-        self.panel_stack.addWidget(self._create_typo_tab())          # 2 错别字 / 重复字
-        self.panel_stack.addWidget(self._create_claim_check_tab())   # 3 权利要求书检查
+        self.panel_stack.addWidget(self._create_mark_tab())                      # 0 标记：附图标记标注
+        self.panel_stack.addWidget(self._wrap_card(self._build_suoshu_card()))   # 1 清洗：删除“所述”
+        self.panel_stack.addWidget(self._wrap_card(self._build_punct_card()))    # 2 清洗：标点检查
+        self.panel_stack.addWidget(self._wrap_card(self._build_orphan_card()))   # 3 清洗：孤立标记检测
+        self.panel_stack.addWidget(self._create_typo_tab())                      # 4 错别字 / 重复字
+        self.panel_stack.addWidget(self._create_claim_check_tab())               # 5 权利要求书检查
         left_split.addWidget(self.panel_stack)
         # 内容区为主舞台：默认占据约 2/3 高度，确保专利内容清晰可读
         left_split.setStretchFactor(0, 2)
@@ -434,19 +437,18 @@ class MainWindow(QMainWindow):
         left_split.setSizes([560, 280])
         body.addWidget(left_split, 1)
 
-        # 右侧：模块切换竖条 + 文件生成
+        # 右侧：两列导航（模块 → 子功能） + 文件操作
         right_col = QVBoxLayout()
         right_col.setSpacing(8)
 
-        self.activity_bar = ActivityBar([
-            ("📌", "标记"),
-            ("🧹", "清洗"),
-            ("📝", "错别字"),
-            ("⚖️", "权项"),
+        self.nav_panel = NavPanel([
+            ("📌 标记", [("附图标记标注", 0)]),
+            ("🧹 清洗", [("删除“所述”", 1), ("标点检查", 2), ("孤立标记检测", 3)]),
+            ("📝 错别字", [("错别字 / 重复字", 4)]),
+            ("⚖️ 权项", [("权利要求书检查", 5)]),
         ])
-        self.activity_bar.switched.connect(self.panel_stack.setCurrentIndex)
-        right_col.addWidget(self.activity_bar)
-        right_col.addStretch()
+        self.nav_panel.page_selected.connect(self.panel_stack.setCurrentIndex)
+        right_col.addWidget(self.nav_panel, 1)
 
         # 文件上传（紧凑；兼当前文件名提示），置于「文件生成」上方
         self.file_btn = QPushButton("📂 选择 / 拖入 docx")
@@ -591,25 +593,14 @@ class MainWindow(QMainWindow):
 
         return widget
 
-    def _create_clean_tab(self) -> QWidget:
-        """创建文本清洗标签页：三个清洗功能并排展示"""
-        outer = QWidget()
-        outer_layout = QVBoxLayout(outer)
-        outer_layout.setContentsMargins(0, 8, 0, 0)
-        outer_layout.setSpacing(10)
-
-        # ── 顶部：三功能并排 ─────────────────────────────
-        cards_row = QHBoxLayout()
-        cards_row.setSpacing(12)
-
-        cards_row.addWidget(self._build_suoshu_card(), 1)
-        cards_row.addWidget(self._build_punct_card(), 1)
-        cards_row.addWidget(self._build_orphan_card(), 1)
-
-        outer_layout.addLayout(cards_row)
-        outer_layout.addStretch(1)
-
-        return outer
+    def _wrap_card(self, card) -> QWidget:
+        """把一张清洗卡片包成 QStackedWidget 的一页（顶部对齐、留白）。"""
+        page = QWidget()
+        lay = QVBoxLayout(page)
+        lay.setContentsMargins(0, 8, 0, 0)
+        lay.addWidget(card)
+        lay.addStretch(1)
+        return page
 
     def _build_suoshu_card(self) -> QGroupBox:
         '''卡片①：删除"所述"'''
