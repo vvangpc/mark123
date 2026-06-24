@@ -411,8 +411,11 @@ class MainWindow(QMainWindow):
         # ===== 主体：三区布局（无顶部标题栏，最大化内容 / 操作面积）=====
         #   左上：常驻内容区（4 标签页）   左下：当前模块面板（QStackedWidget）
         #   右侧：模块切换竖条 + 文件操作
-        body = QHBoxLayout()
-        body.setSpacing(10)
+        # 主体水平分割：左区（1框/2框） ↔ 右区（3列/4列导航 + 文件操作）可拖拽调宽
+        body = QSplitter(Qt.Orientation.Horizontal)
+        body.setObjectName("bodySplit")
+        body.setChildrenCollapsible(False)
+        body.setHandleWidth(6)
 
         left_split = QSplitter(Qt.Orientation.Vertical)
         left_split.setObjectName("mainSplit")
@@ -430,25 +433,32 @@ class MainWindow(QMainWindow):
         self.panel_stack.addWidget(self._wrap_card(self._build_orphan_card()))   # 3 清洗：孤立标记检测
         self.panel_stack.addWidget(self._create_typo_tab())                      # 4 错别字 / 重复字
         self.panel_stack.addWidget(self._create_claim_check_tab())               # 5 权利要求书检查
+        self.panel_stack.addWidget(self._create_replace_page())                  # 6 清洗：全文替换（输入框）
         left_split.addWidget(self.panel_stack)
         # 内容区为主舞台：默认占据约 2/3 高度，确保专利内容清晰可读
         left_split.setStretchFactor(0, 2)
         left_split.setStretchFactor(1, 1)
         left_split.setSizes([560, 280])
-        body.addWidget(left_split, 1)
+        left_split.setHandleWidth(6)
+        # 1框（内容区）不可收起；2框（操作面板）可收起——向下拖到一定位置即收起消失（无极调节）
+        left_split.setCollapsible(0, False)
+        left_split.setCollapsible(1, True)
+        body.addWidget(left_split)
 
         # 右侧：两列导航（模块 → 子功能） + 文件操作
-        right_col = QVBoxLayout()
+        right_widget = QWidget()
+        right_col = QVBoxLayout(right_widget)
+        right_col.setContentsMargins(0, 0, 0, 0)
         right_col.setSpacing(8)
 
         # 「标记」模块的操作按钮组放进右侧第二列（4列）；其余模块第二列仍是子功能列表。
         self.mark_actions_panel = self._create_mark_actions()
         self.nav_panel = NavPanel([
             ("📌 标记", self.mark_actions_panel, 0),
-            ("🧹 清洗", [("删除“所述”", 1), ("标点检查", 2), ("孤立标记检测", 3)]),
+            ("🧹 清洗", self._build_clean_nav(), 1),   # 控件型：4列放 清洗各功能 + 确认替换
             ("📝 错别字", self._build_typo_nav(), 4),  # 控件型：错别字检查 + 错别字词库
             ("🔁 重复字", self._build_dup_nav(), 4),   # 控件型：重复字检查 + 忽略词库（共用 2框 结果表）
-            ("⚖️ 权项", [("权利要求书检查", 5)]),
+            ("⚖️ 权项", self._build_claim_nav(), 5),  # 控件型：检查参数 + 开始检查在 4列
         ])
         self.nav_panel.page_selected.connect(self.panel_stack.setCurrentIndex)
         right_col.addWidget(self.nav_panel, 1)
@@ -487,9 +497,12 @@ class MainWindow(QMainWindow):
         gen_row.addWidget(self.settings_btn)
         right_col.addLayout(gen_row)
 
-        body.addLayout(right_col)
+        body.addWidget(right_widget)
+        body.setStretchFactor(0, 1)   # 左区随窗口伸缩
+        body.setStretchFactor(1, 0)   # 右区（导航 + 文件）保持窄
+        body.setSizes([900, 250])
 
-        main_layout.addLayout(body, 1)
+        main_layout.addWidget(body, 1)
 
         # ===== 底部：状态栏 =====
         self.status_bar = QStatusBar()
@@ -728,6 +741,104 @@ class MainWindow(QMainWindow):
         v.addWidget(self.orphan_result_text, 1)
         return group
 
+    def _build_clean_nav(self) -> QWidget:
+        """清洗模块 4列：删除所述 / 标点 / 孤立 / 全文替换（导航）+ 确认替换（执行）。"""
+        w = QWidget()
+        w.setObjectName("markActions")
+        v = QVBoxLayout(w)
+        v.setContentsMargins(0, 0, 0, 0)
+        v.setSpacing(5)
+
+        v.addWidget(self._nav_caption("清洗功能"))
+        b1 = self._nav_btn("🗑️ 删除“所述”")
+        b1.clicked.connect(lambda: self.panel_stack.setCurrentIndex(1))
+        v.addWidget(b1)
+        b2 = self._nav_btn("🔣 标点检查")
+        b2.clicked.connect(lambda: self.panel_stack.setCurrentIndex(2))
+        v.addWidget(b2)
+        b3 = self._nav_btn("🔍 孤立标记检测")
+        b3.clicked.connect(lambda: self.panel_stack.setCurrentIndex(3))
+        v.addWidget(b3)
+
+        v.addWidget(self._nav_caption("全文替换"))
+        b4 = self._nav_btn("🔁 全文替换")
+        b4.setToolTip("在 2框 填写「替换前 / 替换后」")
+        b4.clicked.connect(lambda: self.panel_stack.setCurrentIndex(6))
+        v.addWidget(b4)
+        self.replace_confirm_btn = self._nav_btn("✅ 确认替换", kind="primary")
+        self.replace_confirm_btn.setToolTip("把 2框「替换前」的文本全文替换为「替换后」")
+        self.replace_confirm_btn.clicked.connect(self._on_clean_replace)
+        v.addWidget(self.replace_confirm_btn)
+
+        v.addStretch(1)
+        return w
+
+    def _create_replace_page(self) -> QWidget:
+        """2框「全文替换」页：替换前 / 替换后 输入框（执行按钮「确认替换」在 4列）。"""
+        w = QWidget()
+        layout = QVBoxLayout(w)
+        layout.setContentsMargins(0, 8, 0, 0)
+        layout.setSpacing(10)
+
+        group = QGroupBox("🔁 全文替换")
+        g = QVBoxLayout(group)
+        hint = QLabel(
+            "对全文做文本替换（格式安全，保留公式 / 图片）。填好「替换前 / 替换后」，"
+            "再点右侧 4列的「✅ 确认替换」。例：把全文「发明」替换为「实用新型」。"
+        )
+        hint.setObjectName("subtitleLabel")
+        hint.setWordWrap(True)
+        g.addWidget(hint)
+
+        row1 = QHBoxLayout()
+        row1.addWidget(QLabel("替换前："))
+        self.replace_from_edit = QLineEdit()
+        self.replace_from_edit.setPlaceholderText("要被替换的文本，如：发明")
+        row1.addWidget(self.replace_from_edit, 1)
+        g.addLayout(row1)
+
+        row2 = QHBoxLayout()
+        row2.addWidget(QLabel("替换后："))
+        self.replace_to_edit = QLineEdit()
+        self.replace_to_edit.setPlaceholderText("替换成的文本，如：实用新型（留空＝删除）")
+        row2.addWidget(self.replace_to_edit, 1)
+        g.addLayout(row2)
+
+        layout.addWidget(group)
+        layout.addStretch(1)
+        return w
+
+    def _on_clean_replace(self):
+        """执行全文替换：把「替换前」文本在所有段落中替换为「替换后」（格式安全）。"""
+        if not self.doc_data:
+            self._show_toast("请先打开文档！", "error")
+            return
+        if self._is_busy():
+            self._show_toast("正在处理中，请稍候", "warning")
+            return
+        src = self.replace_from_edit.text()
+        dst = self.replace_to_edit.text()
+        if not src:
+            self._show_toast("请先在 2框 填写「替换前」内容", "warning")
+            return
+        from core.annotator import annotate_paragraph_safe
+        n = 0
+        for p in self.doc_data["paragraphs"]:
+            try:
+                if annotate_paragraph_safe(p, {src: dst}):
+                    n += 1
+            except Exception:
+                pass
+        self.content_area.load(self.doc_data)   # 刷新 1框 显示
+        self._invalidate_typo_cache()
+        self._invalidate_dup_cache()
+        self._log_clean(f"🔁 全文替换：「{src}」→「{dst}」，{n} 段发生替换")
+        if n:
+            self._add_history(f"全文替换「{src}」→「{dst}」", f"共 {n} 段")
+            self._show_toast(f"已替换 {n} 段", "success")
+        else:
+            self._show_toast("未找到可替换内容", "info")
+
     @staticmethod
     def _nav_btn(text: str, kind: str = "") -> QPushButton:
         """4列操作按钮：与「标记」模块同款 navActionBtn 风格（左对齐、整宽，
@@ -865,108 +976,67 @@ class MainWindow(QMainWindow):
     # ─────────────────────────────────────────
     # 权利要求书检查 Tab
     # ─────────────────────────────────────────
-    def _create_claim_check_tab(self) -> QWidget:
-        """创建「权利要求书检查」标签页"""
-        widget = QWidget()
-        outer = QVBoxLayout(widget)
-        outer.setContentsMargins(0, 8, 0, 0)
-        outer.setSpacing(10)
+    def _build_claim_nav(self) -> QWidget:
+        """权项模块的 4列控件：检查字数 / 动态截断 / 动态回退 / 不确定用语 / 开始检查。"""
+        w = QWidget()
+        v = QVBoxLayout(w)
+        v.setContentsMargins(0, 0, 0, 0)
+        v.setSpacing(8)
 
-        # ── 顶部工具栏 ──────────────────────────────────────
-        toolbar = QHBoxLayout()
-        toolbar.setSpacing(10)
-
-        # 检查字数选择栏：pill 式容器，左侧标签 + 6 个预设按钮 + 自定义框
-        n_bar = QFrame()
-        n_bar.setObjectName("claimNBar")
-        # Minimum 策略：窗口变窄时该容器不被压缩到内容宽度以下，
-        # 自定义数字框因此始终完整可见（必要时由右侧其它控件让位）。
-        n_bar.setSizePolicy(QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Preferred)
-        n_bar_layout = QHBoxLayout(n_bar)
-        n_bar_layout.setContentsMargins(10, 2, 10, 2)
-        n_bar_layout.setSpacing(6)
-
-        n_label = QLabel("检查字数")
-        n_bar_layout.addWidget(n_label)
-
-        self._claim_n_buttons = QButtonGroup(widget)
+        # 检查字数：6 个预设 + 自定义
+        self._claim_n = 2
+        v.addWidget(QLabel("检查字数"))
+        n_row = QHBoxLayout()
+        n_row.setSpacing(2)
+        self._claim_n_buttons = QButtonGroup(w)
         self._claim_n_buttons.setExclusive(True)
         for val in (2, 3, 4, 5, 6, 7):
             b = QPushButton(str(val))
             b.setCheckable(True)
             b.setCursor(Qt.CursorShape.PointingHandCursor)
             b.setObjectName("nPresetBtn")
+            b.setMaximumWidth(30)
             if val == 2:
                 b.setChecked(True)
-            b.clicked.connect(lambda _=False, v=val: self._on_claim_n_preset(v))
+            b.clicked.connect(lambda _=False, vv=val: self._on_claim_n_preset(vv))
             self._claim_n_buttons.addButton(b, val)
-            n_bar_layout.addWidget(b)
+            n_row.addWidget(b)
+        v.addLayout(n_row)
 
-        sep = QLabel("|")
-        sep.setStyleSheet("color: rgba(128,128,128,0.4); padding: 0 4px;")
-        n_bar_layout.addWidget(sep)
-
-        n_bar_layout.addWidget(QLabel("自定义"))
+        custom_row = QHBoxLayout()
+        custom_row.setSpacing(4)
+        custom_row.addWidget(QLabel("自定义"))
         self.claim_n_custom = QSpinBox()
         self.claim_n_custom.setObjectName("nCustomSpin")
-        # 去掉上下箭头按钮，直接键入数字即可
         self.claim_n_custom.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.NoButtons)
-        self.claim_n_custom.setMinimumWidth(56)  # 保底宽度，窗口变窄时数字不被压没
         self.claim_n_custom.setRange(2, 30)
         self.claim_n_custom.setValue(8)
         self.claim_n_custom.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.claim_n_custom.setToolTip(
-            "自定义检查字数。数值变化会取消上方 6 个按钮的选中态，"
-            "以此处填入的数值为准。"
-        )
+        self.claim_n_custom.setToolTip("自定义检查字数；填入后以此为准（取消上方预设选中）")
         self.claim_n_custom.valueChanged.connect(self._on_claim_n_custom_changed)
-        n_bar_layout.addWidget(self.claim_n_custom)
+        custom_row.addWidget(self.claim_n_custom, 1)
+        v.addLayout(custom_row)
 
-        toolbar.addWidget(n_bar)
-        toolbar.addSpacing(6)
-
-        self.claim_check_btn = QPushButton("▶  开始检查")
-        self.claim_check_btn.setObjectName("accentBtn")
-        self.claim_check_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.claim_check_btn.setEnabled(False)
-        self.claim_check_btn.clicked.connect(self._on_claim_check_start)
-        toolbar.addWidget(self.claim_check_btn)
-
-        # ── 引用基础降噪：动态截断 / 动态回退 两个上下分布的勾选框 ──
-        dyn_box = QFrame()
-        dyn_box.setObjectName("dynBox")
-        dyn_layout = QVBoxLayout(dyn_box)
-        dyn_layout.setContentsMargins(6, 0, 6, 0)
-        dyn_layout.setSpacing(2)
-
-        # 第一行：动态截断
+        # 引用基础降噪：动态截断（带黑名单） / 动态回退
         trunc_row = QHBoxLayout()
-        trunc_row.setContentsMargins(0, 0, 0, 0)
         trunc_row.setSpacing(4)
         self.claim_dyn_trunc_cb = QCheckBox()
-        self.claim_dyn_trunc_cb.setChecked(False)
         self.claim_dyn_trunc_cb.setCursor(Qt.CursorShape.PointingHandCursor)
         trunc_row.addWidget(self.claim_dyn_trunc_cb)
-        # 可点击的标签：左键点击 → 弹介绍；[黑名单] → 打开黑名单词库
         self.claim_dyn_trunc_label = QLabel(
             '<a href="info" style="text-decoration:none;color:inherit;">动态截断</a>'
             '&nbsp;<a href="bl" style="text-decoration:none;color:#3a8ee6;">[黑名单]</a>'
         )
         self.claim_dyn_trunc_label.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.claim_dyn_trunc_label.setToolTip(
-            "点「动态截断」查看功能说明；点「[黑名单]」编辑边界词库"
-        )
+        self.claim_dyn_trunc_label.setToolTip("点「动态截断」查看说明；点「[黑名单]」编辑边界词库")
         self.claim_dyn_trunc_label.linkActivated.connect(self._on_dyn_trunc_link)
         trunc_row.addWidget(self.claim_dyn_trunc_label)
         trunc_row.addStretch()
-        dyn_layout.addLayout(trunc_row)
+        v.addLayout(trunc_row)
 
-        # 第二行：动态回退
         fb_row = QHBoxLayout()
-        fb_row.setContentsMargins(0, 0, 0, 0)
         fb_row.setSpacing(4)
         self.claim_dyn_fb_cb = QCheckBox()
-        self.claim_dyn_fb_cb.setChecked(False)
         self.claim_dyn_fb_cb.setCursor(Qt.CursorShape.PointingHandCursor)
         fb_row.addWidget(self.claim_dyn_fb_cb)
         self.claim_dyn_fb_label = QLabel(
@@ -977,20 +1047,10 @@ class MainWindow(QMainWindow):
         self.claim_dyn_fb_label.linkActivated.connect(self._on_dyn_fb_link)
         fb_row.addWidget(self.claim_dyn_fb_label)
         fb_row.addStretch()
-        dyn_layout.addLayout(fb_row)
+        v.addLayout(fb_row)
 
-        toolbar.addWidget(dyn_box)
-
-        # ── 不确定用语检查 勾选框 ──
-        check_box = QFrame()
-        check_box.setObjectName("checkBox")
-        check_layout = QVBoxLayout(check_box)
-        check_layout.setContentsMargins(6, 0, 6, 0)
-        check_layout.setSpacing(2)
-
-        # 不确定用语检查（默认勾选，保持原有行为）
+        # 不确定用语检查（默认勾选）
         vague_row = QHBoxLayout()
-        vague_row.setContentsMargins(0, 0, 0, 0)
         vague_row.setSpacing(4)
         self.claim_vague_cb = QCheckBox()
         self.claim_vague_cb.setChecked(True)
@@ -1001,68 +1061,39 @@ class MainWindow(QMainWindow):
             '&nbsp;<a href="wb" style="text-decoration:none;color:#3a8ee6;">[词库]</a>'
         )
         self.claim_vague_label.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.claim_vague_label.setToolTip(
-            "点「不确定用语检查」查看功能说明；点「[词库]」编辑不确定用语词库"
-        )
+        self.claim_vague_label.setToolTip("点「不确定用语检查」查看说明；点「[词库]」编辑词库")
         self.claim_vague_label.linkActivated.connect(self._on_vague_link)
         vague_row.addWidget(self.claim_vague_label)
         vague_row.addStretch()
-        check_layout.addLayout(vague_row)
+        v.addLayout(vague_row)
 
-        toolbar.addWidget(check_box)
+        self.claim_check_btn = self._nav_btn("▶ 开始检查")
+        self.claim_check_btn.setEnabled(False)
+        self.claim_check_btn.clicked.connect(self._on_claim_check_start)
+        v.addWidget(self.claim_check_btn)
 
-        toolbar.addStretch()
+        v.addStretch()
+        return w
+
+    def _create_claim_check_tab(self) -> QWidget:
+        """权利要求书检查结果页（2框）。检查参数 / 开始检查在 4列（见 _build_claim_nav）；
+        权利要求书正文在 1框「权利要求书」标签页查看 / 编辑。"""
+        widget = QWidget()
+        outer = QVBoxLayout(widget)
+        outer.setContentsMargins(0, 8, 0, 0)
+        outer.setSpacing(8)
 
         self.claim_status_label = QLabel("请先打开 docx 文件")
         self.claim_status_label.setObjectName("subtitleLabel")
-        toolbar.addWidget(self.claim_status_label)
+        outer.addWidget(self.claim_status_label)
 
-        outer.addLayout(toolbar)
-
-        # ── 中部：左预览（可编辑） / 右结果表（可拖动分隔）──
-        self.claim_splitter = QSplitter(Qt.Orientation.Horizontal)
-        self.claim_splitter.setChildrenCollapsible(False)
-
-        # 左侧：预览编辑 + 确认按钮
-        left_panel = QGroupBox("📄 权利要求书（可编辑）")
-        left_layout = QVBoxLayout(left_panel)
-        left_layout.setSpacing(6)
-
-        self.claim_preview_edit = QPlainTextEdit()
-        self.claim_preview_edit.setPlaceholderText(
-            "打开文档后将在这里展示权利要求书。\n"
-            "您可以直接编辑；修改后务必点下方的「✔ 确认修改」把改动写回内存，\n"
-            "最终「💾 文件生成」时才会落盘到 .docx。"
+        hint = QLabel(
+            "表中仅展示问题，不写入最终文件；双击「上下文」跳到 1框「权利要求书」并高亮，"
+            "双击「说明」看完整描述；在 1框改完正文后再次「开始检查」重扫。"
         )
-        self.claim_preview_edit.textChanged.connect(self._on_claim_text_changed)
-        left_layout.addWidget(self.claim_preview_edit, 1)
-
-        self.claim_confirm_btn = QPushButton("✔  确认修改")
-        self.claim_confirm_btn.setObjectName("primaryBtn")
-        self.claim_confirm_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.claim_confirm_btn.setEnabled(False)
-        self.claim_confirm_btn.setToolTip(
-            "将预览框的当前内容写回内存中的权利要求书段落。\n"
-            "段落数必须保持不变（每行对应一段），最终 .docx 会反映此处的修改。"
-        )
-        self.claim_confirm_btn.clicked.connect(self._on_claim_confirm_edits)
-        left_layout.addWidget(self.claim_confirm_btn)
-
-        self.claim_splitter.addWidget(left_panel)
-
-        # 右侧：检查结果表
-        right_panel = QGroupBox("🔍 检查结果")
-        right_layout = QVBoxLayout(right_panel)
-        right_layout.setSpacing(6)
-
-        right_hint = QLabel(
-            "表中仅展示问题，不会写入最终文件；双击「上下文」可跳转到左侧预览框"
-            "对应位置并高亮；双击「说明」可弹出完整描述；改完再次「开始检查」"
-            "重扫，直到清零。"
-        )
-        right_hint.setObjectName("subtitleLabel")
-        right_hint.setWordWrap(True)
-        right_layout.addWidget(right_hint)
+        hint.setObjectName("subtitleLabel")
+        hint.setWordWrap(True)
+        outer.addWidget(hint)
 
         self.claim_result_table = QTableWidget(0, 5)
         self.claim_result_table.setHorizontalHeaderLabels(
@@ -1071,11 +1102,8 @@ class MainWindow(QMainWindow):
         h = self.claim_result_table.horizontalHeader()
         h.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
         h.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
-        # 上下文：Interactive，用户可拖动它与「说明」之间的分界线
         h.setSectionResizeMode(2, QHeaderView.ResizeMode.Interactive)
-        # 说明：Stretch，自动填满剩余空间，右边界不可拖动，操作列始终可见
         h.setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
-        # 操作：固定宽度，吸附在右侧，保证足以显示「忽略」两字
         h.setSectionResizeMode(4, QHeaderView.ResizeMode.Fixed)
         self.claim_result_table.setColumnWidth(4, 72)
         self.claim_result_table.setColumnWidth(2, 240)
@@ -1084,18 +1112,11 @@ class MainWindow(QMainWindow):
         self.claim_result_table.verticalHeader().setVisible(False)
         self.claim_result_table.verticalHeader().setDefaultSectionSize(30)
         self.claim_result_table.verticalHeader().setMinimumSectionSize(28)
-        # 双击「上下文」格（列 2） → 跳转并高亮左侧预览框对应位置
         self.claim_result_table.cellDoubleClicked.connect(
             self._on_claim_result_double_clicked
         )
-        # 单击「忽略」列（列 4）→ 触发忽略
         self.claim_result_table.cellClicked.connect(self._on_claim_cell_clicked)
-        right_layout.addWidget(self.claim_result_table, 1)
-
-        self.claim_splitter.addWidget(right_panel)
-        self.claim_splitter.setSizes([560, 640])
-
-        outer.addWidget(self.claim_splitter, 1)
+        outer.addWidget(self.claim_result_table, 1)
         return widget
 
     def _get_wordbank_count(self) -> int:
@@ -1455,26 +1476,6 @@ class MainWindow(QMainWindow):
         if self._is_busy():
             self._show_toast("正在处理中，请等待当前操作完成后再生成文件", "warning")
             return
-        # 权利要求书 Tab 若有未确认修改，提示用户先确认
-        if getattr(self, "_claim_dirty", False):
-            reply = QMessageBox.question(
-                self, "权利要求书有未确认修改",
-                "「权利要求书检查」Tab 的预览框中有未确认的编辑。\n"
-                "是否立即确认并把这些修改写入内存？\n\n"
-                "• 选「Yes」：先确认再继续生成文件；\n"
-                "• 选「No」：放弃这些未确认修改继续生成（文件不会包含它们）；\n"
-                "• 选「Cancel」：中断，回到界面手动处理。",
-                QMessageBox.StandardButton.Yes
-                | QMessageBox.StandardButton.No
-                | QMessageBox.StandardButton.Cancel,
-                QMessageBox.StandardButton.Yes,
-            )
-            if reply == QMessageBox.StandardButton.Cancel:
-                return
-            if reply == QMessageBox.StandardButton.Yes:
-                if not self._on_claim_confirm_edits():
-                    return  # 段落数不匹配等 → 中断
-            # No：放弃未确认修改，继续向下
         if not self.history_entries:
             reply = QMessageBox.question(
                 self, "未检测到修改",
@@ -1726,7 +1727,6 @@ class MainWindow(QMainWindow):
         self.typo_apply_btn.setEnabled(enabled and bool(self._active_cache_list()))
         # 权要 Tab
         self.claim_check_btn.setEnabled(enabled and self._claim_loaded)
-        self.claim_confirm_btn.setEnabled(enabled and self._claim_dirty)
         # generate_btn 仅在有历史时启用
         self.generate_btn.setEnabled(enabled and bool(self.history_entries))
 
@@ -2219,7 +2219,7 @@ class MainWindow(QMainWindow):
         self._claim_n = int(value)
 
     def _claim_tab_load_from_doc(self):
-        """_load_document 成功后：把权利要求书章节填入预览框。"""
+        """_load_document 成功后：记录权利要求书段落区间（正文在 1框「权利要求书」展示 / 编辑）。"""
         if not self.doc_data:
             return
         # 新文档加载 → 清空本次会话的忽略记录
@@ -2227,99 +2227,43 @@ class MainWindow(QMainWindow):
         sections = self.doc_data.get('sections', {})
         section = sections.get('权利要求书')
         if section is None:
-            self.claim_preview_edit.blockSignals(True)
-            self.claim_preview_edit.setPlainText("")
-            self.claim_preview_edit.blockSignals(False)
             self._claim_start_idx = None
             self._claim_end_idx = None
             self._claim_para_count = 0
-            self._claim_dirty = False
             self._claim_loaded = False
             self.claim_check_btn.setEnabled(False)
-            self.claim_confirm_btn.setEnabled(False)
             self.claim_status_label.setText("未识别到权利要求书章节")
             self.claim_result_table.setRowCount(0)
             self._claim_results = []
             return
 
-        paragraphs = self.doc_data['paragraphs']
         self._claim_start_idx = section.start_idx
         self._claim_end_idx = section.end_idx
         self._claim_para_count = section.end_idx - section.start_idx
-
-        # 每段一行（含空段）→ 行数严格等于 para_count
-        lines = []
-        for i in range(section.start_idx, section.end_idx):
-            text = paragraphs[i].text if paragraphs[i].text else ""
-            lines.append(text)
-        content = "\n".join(lines)
-
-        self.claim_preview_edit.blockSignals(True)
-        self.claim_preview_edit.setPlainText(content)
-        self.claim_preview_edit.blockSignals(False)
-
-        self._claim_dirty = False
         self._claim_loaded = True
         self.claim_check_btn.setEnabled(True)
-        self.claim_confirm_btn.setEnabled(False)
         self._claim_results = []
         self.claim_result_table.setRowCount(0)
         self.claim_status_label.setText(
-            f"已加载权利要求书：共 {self._claim_para_count} 段  ·  点「开始检查」开始"
+            f"已加载权利要求书：共 {self._claim_para_count} 段  ·  在 1框「权利要求书」查看，点「开始检查」"
         )
 
-    def _on_claim_text_changed(self):
-        """预览框内容变化 → 标记 dirty，高亮确认按钮"""
-        if not self._claim_loaded:
-            return
-        self._claim_dirty = True
-        self.claim_confirm_btn.setEnabled(True)
-        self._update_claim_status_bar()
-
     def _update_claim_status_bar(self):
-        """刷新权利要求书 Tab 的状态栏文字"""
+        """刷新权利要求书检查的状态文字"""
         if not self._claim_loaded:
             return
         n_results = len(self._claim_results)
         parts = [f"共 {self._claim_para_count} 段"]
         if n_results:
             parts.append(f"问题 {n_results} 条")
-        if self._claim_dirty:
-            parts.append("⚠ 未确认修改")
         self.claim_status_label.setText("  ·  ".join(parts))
 
     def _on_claim_check_start(self):
-        """点「开始检查」：先从预览框收集文本并做检查（不会自动写回内存）"""
+        """点「开始检查」：基于内存中的权利要求书段落运行检查
+        （1框 对正文的编辑实时反映到内存，故无需预览框）。"""
         if not self._claim_loaded or self._claim_start_idx is None:
             self._show_toast("请先加载包含权利要求书的文档", "warning")
             return
-
-        # 从预览框拿当前内容（可能是用户修改过但未确认的）
-        text = self.claim_preview_edit.toPlainText()
-        lines = text.split("\n")
-        if len(lines) != self._claim_para_count:
-            QMessageBox.warning(
-                self, "段落数变化",
-                f"预览框现有 {len(lines)} 行，而加载时为 {self._claim_para_count} 段。\n\n"
-                "本功能要求每行对应一个段落（v1 限制）。请：\n"
-                "• 不要增减整行（不要按回车新增空行，也不要删除整行）；\n"
-                "• 仅在行内修改文字；\n"
-                "• 如需大幅调整结构，请使用其它功能完成后再回来。"
-            )
-            return
-
-        # 临时构造 dummy paragraphs：用简单壳类，只提供 .text 属性给 parse_claims 用
-        class _Shell:
-            __slots__ = ("text",)
-
-            def __init__(self, t):
-                self.text = t
-
-        # 为了让 para_idx 的偏移与全文一致，我们只把权利要求书区间替换成 shell
-        doc_paragraphs = self.doc_data['paragraphs']
-        shell_paragraphs = list(doc_paragraphs)
-        for i, line in enumerate(lines):
-            shell_paragraphs[self._claim_start_idx + i] = _Shell(line)
 
         try:
             from core.claim_check import run_all_checks
@@ -2330,7 +2274,7 @@ class MainWindow(QMainWindow):
             boundary_bl = load_boundary_blacklist() if use_trunc else None
             n = int(self._claim_n)
             results = run_all_checks(
-                shell_paragraphs,
+                self.doc_data['paragraphs'],
                 self._claim_start_idx,
                 self._claim_end_idx,
                 n=n,
@@ -2467,17 +2411,9 @@ class MainWindow(QMainWindow):
         dlg.exec()
 
     def _on_claim_result_double_clicked(self, row: int, col: int):
-        """
-        双击结果表：
-          - 第 2 列「上下文」→ 在左侧预览框定位到对应段落并高亮关键片段
-          - 第 3 列「说明」  → 弹出完整说明对话框（避免 elide 显示不全）
-          - 其它列           → 不响应
-
-        上下文定位策略：
-          1. 以结果的 para_idx 锚定 preview 中的行号
-          2. 尝试在该行文本里找到 context（去首尾空格）的最长非空白片段
-          3. 若找不到就整行选中
-        高亮用 QPlainTextEdit.ExtraSelection，下次双击时自动替换。
+        """双击结果表：
+          - 第 3 列「说明」→ 弹出完整说明对话框；
+          - 第 2 列「上下文」→ 切到 1框「权利要求书」并查找 / 高亮上下文关键片段。
         """
         if row < 0 or row >= len(self._claim_results):
             return
@@ -2486,66 +2422,16 @@ class MainWindow(QMainWindow):
             return
         if col != 2:
             return
-        if not self._claim_loaded or self._claim_start_idx is None:
-            return
-
         item = self._claim_results[row]
-        para_idx = item.get("para_idx")
-        if para_idx is None or para_idx < 0:
-            return
-        line_no = para_idx - self._claim_start_idx
-        if line_no < 0 or line_no >= self._claim_para_count:
-            return
-
-        doc = self.claim_preview_edit.document()
-        block = doc.findBlockByNumber(line_no)
-        if not block.isValid():
-            return
-        line_text = block.text()
-
-        # 从 context 中抽一个"搜索锚"：取最长的非空白子串（通常是术语本身）
         context = (item.get("context") or "").strip()
         search_key = _longest_nonspace_run(context)
-
-        start_in_line = -1
-        if search_key:
-            start_in_line = line_text.find(search_key)
-        # 二次兜底：优先用术语字面量（从 message 里抽）
-        if start_in_line < 0:
+        if not search_key:
             import re as _re
             msg = item.get("message", "")
             m = _re.search(r'『所述(.+?)』', msg) or _re.search(r'『(.+?)』', msg)
             if m:
                 search_key = m.group(1)
-                start_in_line = line_text.find(search_key)
-
-        cursor = QTextCursor(block)
-        if start_in_line >= 0 and search_key:
-            cursor.setPosition(block.position() + start_in_line)
-            cursor.setPosition(
-                block.position() + start_in_line + len(search_key),
-                QTextCursor.MoveMode.KeepAnchor,
-            )
-        else:
-            cursor.movePosition(QTextCursor.MoveOperation.StartOfBlock)
-            cursor.movePosition(
-                QTextCursor.MoveOperation.EndOfBlock,
-                QTextCursor.MoveMode.KeepAnchor,
-            )
-
-        # 持久高亮（QPlainTextEdit 的 ExtraSelection 类型来自 QTextEdit）
-        extra = QTextEdit.ExtraSelection()
-        fmt = QTextCharFormat()
-        fmt.setBackground(QColor("#ffd966"))  # 柔和黄
-        fmt.setForeground(QColor("#1a237e"))
-        extra.format = fmt
-        extra.cursor = QTextCursor(cursor)
-        self.claim_preview_edit.setExtraSelections([extra])
-
-        # 光标 + 滚动 + 聚焦
-        self.claim_preview_edit.setTextCursor(cursor)
-        self.claim_preview_edit.centerCursor()
-        self.claim_preview_edit.setFocus()
+        self.content_area.locate_in_claims(search_key)
 
     def _on_claim_cell_clicked(self, row: int, col: int):
         """单击单元格 → 若是「忽略」列则触发忽略，其它列交给双击处理。"""
@@ -2679,63 +2565,3 @@ class MainWindow(QMainWindow):
             "• 内置 30+ 条常见词，可恢复默认"
         )
 
-    def _on_claim_confirm_edits(self) -> bool:
-        """
-        确认修改：把预览框中的内容写回内存 paragraphs[start:end]。
-        返回 True 表示成功或无需写回；False 表示失败（段落数变化等）。
-        """
-        if not self._claim_loaded or self._claim_start_idx is None:
-            return True
-        if not self._claim_dirty:
-            return True
-
-        text = self.claim_preview_edit.toPlainText()
-        lines = text.split("\n")
-        if len(lines) != self._claim_para_count:
-            QMessageBox.warning(
-                self, "段落数变化",
-                f"预览框现有 {len(lines)} 行，而原文档为 {self._claim_para_count} 段。\n\n"
-                "本功能要求每行对应一个段落（v1 限制）。请恢复为原段数后再确认，"
-                "或使用撤销 (Ctrl+Z) 回到上一状态。"
-            )
-            return False
-
-        paragraphs = self.doc_data['paragraphs']
-        from core.paragraph_edit import set_paragraph_text
-        changed_count = 0
-        changed_lines = []
-        for i, new_line in enumerate(lines):
-            para = paragraphs[self._claim_start_idx + i]
-            old_line = para.text if para.text else ""
-            if old_line != new_line:
-                try:
-                    if set_paragraph_text(para, new_line):
-                        changed_count += 1
-                        preview_old = old_line.strip()[:40]
-                        preview_new = new_line.strip()[:40]
-                        changed_lines.append(
-                            f"第{i+1}段：{preview_old} → {preview_new}"
-                        )
-                except Exception as e:
-                    QMessageBox.critical(
-                        self, "写回失败",
-                        f"第 {i+1} 段写回时出错：\n{e}"
-                    )
-                    return False
-
-        self._claim_dirty = False
-        self.claim_confirm_btn.setEnabled(False)
-        self._update_claim_status_bar()
-
-        if changed_count:
-            detail = "\n".join(changed_lines[:20])
-            if len(changed_lines) > 20:
-                detail += f"\n…（共 {len(changed_lines)} 处改动）"
-            self._add_history(
-                f"编辑权利要求书（{changed_count} 段）",
-                detail,
-            )
-            self._show_toast(f"已确认 {changed_count} 段修改", "success")
-        else:
-            self._show_toast("无实际改动", "info")
-        return True

@@ -11,7 +11,7 @@ ui/nav_panel.py — 右侧两列导航（master-detail）
 """
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtWidgets import (
-    QWidget, QHBoxLayout, QListWidget, QListWidgetItem, QStackedWidget,
+    QWidget, QHBoxLayout, QListWidget, QListWidgetItem, QStackedWidget, QSplitter,
 )
 
 _QSS = """
@@ -57,21 +57,31 @@ class NavPanel(QWidget):
 
         layout = QHBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(6)
+
+        # 3列 ↔ 4列 之间用可拖拽分隔条
+        splitter = QSplitter(Qt.Orientation.Horizontal)
+        splitter.setObjectName("navSplit")
+        splitter.setChildrenCollapsible(False)
+        splitter.setHandleWidth(4)
 
         # 第一列（3列）：固定模块
         self.col1 = QListWidget()
         self.col1.setObjectName("navCol1")
-        self.col1.setFixedWidth(78)
+        self.col1.setMinimumWidth(54)
         for entry in modules:
             self.col1.addItem(entry[0])
-        layout.addWidget(self.col1)
+        splitter.addWidget(self.col1)
 
         # 第二列（4列）：用 QStackedWidget 容纳「共用子功能列表」与各控件型模块的自定义控件
         self.col2_stack = QStackedWidget()
         self.col2_stack.setObjectName("navCol2")
-        self.col2_stack.setMinimumWidth(150)
-        layout.addWidget(self.col2_stack, 1)
+        self.col2_stack.setMinimumWidth(120)
+        splitter.addWidget(self.col2_stack)
+
+        splitter.setStretchFactor(0, 0)
+        splitter.setStretchFactor(1, 1)
+        splitter.setSizes([80, 170])
+        layout.addWidget(splitter)
 
         # stack 第 0 页：被所有「列表型」模块共用的子功能列表
         self.col2_list = QListWidget()
