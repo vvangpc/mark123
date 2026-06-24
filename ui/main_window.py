@@ -435,6 +435,9 @@ class MainWindow(QMainWindow):
         self.panel_stack.addWidget(self._create_claim_check_tab())               # 5 权利要求书检查
         self.panel_stack.addWidget(self._create_replace_page())                  # 6 清洗：全文替换（输入框）
         left_split.addWidget(self.panel_stack)
+        # 2框允许被分隔条自由收缩 / 收起：QStackedWidget 默认最小高度取最高页（如结果表），
+        # 显式置 0，避免显示矮小卡片时 2框 仍被撑高、分隔条拖不下去（红框区收不掉）。
+        self.panel_stack.setMinimumHeight(0)
         # 内容区为主舞台：默认占据约 2/3 高度，确保专利内容清晰可读
         left_split.setStretchFactor(0, 2)
         left_split.setStretchFactor(1, 1)
@@ -857,8 +860,14 @@ class MainWindow(QMainWindow):
         lab.setObjectName("markCaption")
         return lab
 
+    def _set_apply_enabled(self, flag: bool):
+        """同时启停 错别字 / 重复字 两个模块 4列 的「应用所有修改」按钮。"""
+        for b in (getattr(self, "typo_apply_btn", None), getattr(self, "dup_apply_btn", None)):
+            if b is not None:
+                b.setEnabled(flag)
+
     def _build_typo_nav(self) -> QWidget:
-        """错别字模块 4列：检查 + 词库（参照标记模块的 navActionBtn 分组风格）。"""
+        """错别字模块 4列：检查 + 应用所有修改 + 词库（navActionBtn 风格）。"""
         w = QWidget()
         w.setObjectName("markActions")
         v = QVBoxLayout(w)
@@ -870,6 +879,12 @@ class MainWindow(QMainWindow):
         self.typo_check_btn.setEnabled(False)
         self.typo_check_btn.clicked.connect(self._on_typo_check)
         v.addWidget(self.typo_check_btn)
+
+        self.typo_apply_btn = self._nav_btn("✅ 应用所有修改")
+        self.typo_apply_btn.setEnabled(False)
+        self.typo_apply_btn.setToolTip("把 2框「建议修改」列的内容写回内存")
+        self.typo_apply_btn.clicked.connect(self._on_apply_corrections)
+        v.addWidget(self.typo_apply_btn)
 
         v.addWidget(self._nav_caption("词库"))
         self.wb_btn = self._nav_btn("")
@@ -895,6 +910,12 @@ class MainWindow(QMainWindow):
         self.dup_check_btn.clicked.connect(self._on_dup_check)
         v.addWidget(self.dup_check_btn)
 
+        self.dup_apply_btn = self._nav_btn("✅ 应用所有修改")
+        self.dup_apply_btn.setEnabled(False)
+        self.dup_apply_btn.setToolTip("把 2框「建议修改」列的内容写回内存")
+        self.dup_apply_btn.clicked.connect(self._on_apply_corrections)
+        v.addWidget(self.dup_apply_btn)
+
         v.addWidget(self._nav_caption("词库"))
         self.dup_ignore_btn = self._nav_btn("")
         self.dup_ignore_btn.setToolTip("打开「重复字词忽略词库」编辑器")
@@ -917,8 +938,8 @@ class MainWindow(QMainWindow):
         action_v = QVBoxLayout(action_group)
 
         hint = QLabel(
-            "在「建议修改」列编辑后，点「应用所有修改」写入内存；"
-            "切回「标注」页点「💾 文件生成」生成最终文件。"
+            "在「建议修改」列编辑后，点右侧 4列的「应用所有修改」写入内存；"
+            "再到右侧「标记」点「💾 文件生成」生成最终文件。"
         )
         hint.setObjectName("subtitleLabel")
         hint.setWordWrap(True)
@@ -932,13 +953,6 @@ class MainWindow(QMainWindow):
         btn_row.addWidget(self.typo_count_label)
 
         btn_row.addStretch()
-
-        self.typo_apply_btn = QPushButton("✅  应用所有修改")
-        self.typo_apply_btn.setObjectName("primaryBtn")
-        self.typo_apply_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.typo_apply_btn.setEnabled(False)
-        self.typo_apply_btn.clicked.connect(self._on_apply_corrections)
-        btn_row.addWidget(self.typo_apply_btn)
         action_v.addLayout(btn_row)
 
         # 单一结果表格，两类检查共用
@@ -1294,7 +1308,7 @@ class MainWindow(QMainWindow):
             self._current_check_kind = None
             self.typo_table.setRowCount(0)
             self.typo_count_label.setText("")
-            self.typo_apply_btn.setEnabled(False)
+            self._set_apply_enabled(False)
 
             # 加载新文档时清空历史与禁用「文件生成」
             self._clear_history()
@@ -1724,7 +1738,7 @@ class MainWindow(QMainWindow):
         self.orphan_btn.setEnabled(enabled)
         self.typo_check_btn.setEnabled(enabled)
         self.dup_check_btn.setEnabled(enabled)
-        self.typo_apply_btn.setEnabled(enabled and bool(self._active_cache_list()))
+        self._set_apply_enabled(enabled and bool(self._active_cache_list()))
         # 权要 Tab
         self.claim_check_btn.setEnabled(enabled and self._claim_loaded)
         # generate_btn 仅在有历史时启用
@@ -2108,7 +2122,7 @@ class MainWindow(QMainWindow):
         # 计数标签 + 应用按钮启用状态
         kind_text = "错别字" if self._current_check_kind == "typo" else "重复字词"
         self.typo_count_label.setText(f"  当前显示：{kind_text}  ·  共 {len(results)} 处")
-        self.typo_apply_btn.setEnabled(len(results) > 0)
+        self._set_apply_enabled(len(results) > 0)
 
     def _fill_typo_table(self, results: list):
         self.typo_table.setRowCount(0)

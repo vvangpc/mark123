@@ -12,6 +12,7 @@ ui/content_area.py — 左上常驻内容区（主舞台）
 阶段二·增量2（任务6）：升级为结构化可编辑（行=段、行数守恒回写、双击定位高亮），
                         并按 doc_parser._has_image 把含图片/公式的段置为只读。
 """
+from PyQt6.QtGui import QTextCursor
 from PyQt6.QtWidgets import QWidget, QVBoxLayout, QTabWidget, QTextEdit
 
 from core.doc_parser import get_section_text
@@ -66,6 +67,24 @@ class ContentArea(QWidget):
     def clear(self):
         for e in self._edits:
             e.clear()
+
+    def locate_in_claims(self, search_key: str) -> bool:
+        """切到「权利要求书」标签页并查找/高亮 search_key（供权项检查双击跳转）。
+
+        1框 内容为 get_section_text 拼接（丢空段），行号与段索引不对应，
+        故按文本内容查找而非按行定位。
+        """
+        self.tabs.setCurrentIndex(0)
+        ed = self._edits[0]
+        if not search_key:
+            return False
+        cur = ed.textCursor()
+        cur.movePosition(QTextCursor.MoveOperation.Start)
+        ed.setTextCursor(cur)
+        found = ed.find(search_key)
+        if found:
+            ed.ensureCursorVisible()
+        return found
 
     def load(self, doc_data: dict):
         """从 doc_data 填充 4 个专利内容标签页（日志 / 历史不在此清空）。"""
