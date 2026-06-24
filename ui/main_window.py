@@ -933,21 +933,12 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(0, 8, 0, 0)
         layout.setSpacing(10)
 
-        # 检查 / 词库按钮在右侧 4列（见 _build_typo_nav）；本页（2框）只放结果表与「应用修改」
-        action_group = QGroupBox("📝 错别字 / 重复字词检查结果")
+        # 检查 / 词库 / 应用 按钮都在右侧 4列；2框 标题随当前检查类型动态变化，只放结果表
+        self.typo_result_group = QGroupBox("📝 错别字 / 重复字词检查结果")
+        action_group = self.typo_result_group
         action_v = QVBoxLayout(action_group)
 
-        # 计数行（检查 / 应用所有修改 按钮均在右侧 4列）
-        btn_row = QHBoxLayout()
-
-        self.typo_count_label = QLabel("")
-        self.typo_count_label.setObjectName("subtitleLabel")
-        btn_row.addWidget(self.typo_count_label)
-
-        btn_row.addStretch()
-        action_v.addLayout(btn_row)
-
-        # 单一结果表格，两类检查共用
+        # 单一结果表格，两类检查共用（计数并入标题，不再单列计数行）
         self.typo_table = QTableWidget(0, 5)
         self.typo_table.setHorizontalHeaderLabels(["章节", "原文片段", "修改前", "修改后", "操作"])
         _th = self.typo_table.horizontalHeader()
@@ -1298,7 +1289,7 @@ class MainWindow(QMainWindow):
             self.dup_data = []
             self._current_check_kind = None
             self.typo_table.setRowCount(0)
-            self.typo_count_label.setText("")
+            self.typo_result_group.setTitle("📝 错别字 / 重复字词检查结果")
             self._set_apply_enabled(False)
 
             # 加载新文档时清空历史与禁用「文件生成」
@@ -2110,9 +2101,11 @@ class MainWindow(QMainWindow):
         finally:
             self.typo_table.setUpdatesEnabled(True)
 
-        # 计数标签 + 应用按钮启用状态
-        kind_text = "错别字" if self._current_check_kind == "typo" else "重复字词"
-        self.typo_count_label.setText(f"  当前显示：{kind_text}  ·  共 {len(results)} 处")
+        # 2框 标题随检查类型动态变化（计数并入），并更新应用按钮启用状态
+        if self._current_check_kind == "typo":
+            self.typo_result_group.setTitle(f"📝 错别字检查结果（共 {len(results)} 处）")
+        else:
+            self.typo_result_group.setTitle(f"🔁 重复字词检查结果（共 {len(results)} 处）")
         self._set_apply_enabled(len(results) > 0)
 
     def _fill_typo_table(self, results: list):
@@ -2164,6 +2157,12 @@ class MainWindow(QMainWindow):
         self._set_clean_buttons_enabled(True)
         self.progress_bar.setVisible(False)
         action = getattr(self, "_pending_clean_action", None)
+
+        # 应用错别字 / 重复字修正后：修正已写入内存，作废两类检查缓存，使下次检查
+        # 重新扫描已修正的内容，避免再次报出已修复的问题。
+        if action == "typo_apply":
+            self._invalidate_typo_cache()
+            self._invalidate_dup_cache()
 
         # 孤立标记检测：结果只显示在自己卡片的小日志框，不写入全局清洗日志
         if action == "orphan" and hasattr(self, "orphan_result_text"):
