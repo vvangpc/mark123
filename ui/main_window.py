@@ -408,13 +408,9 @@ class MainWindow(QMainWindow):
         main_layout.setContentsMargins(20, 16, 20, 12)
         main_layout.setSpacing(12)
 
-        # ===== 顶部区域：标题 + 文件选择 =====
-        header = self._create_header()
-        main_layout.addWidget(header)
-
-        # ===== 中间区域：三区布局 =====
+        # ===== 主体：三区布局（无顶部标题栏，最大化内容 / 操作面积）=====
         #   左上：常驻内容区（4 标签页）   左下：当前模块面板（QStackedWidget）
-        #   右侧：模块切换竖条（ActivityBar）
+        #   右侧：模块切换竖条 + 文件操作
         body = QHBoxLayout()
         body.setSpacing(10)
 
@@ -452,7 +448,16 @@ class MainWindow(QMainWindow):
         right_col.addWidget(self.activity_bar)
         right_col.addStretch()
 
-        # 文件生成（独立放在右侧，与各模块操作分离）
+        # 文件上传（紧凑；兼当前文件名提示），置于「文件生成」上方
+        self.file_btn = QPushButton("📂 选择 / 拖入 docx")
+        self.file_btn.setObjectName("fileBtn")
+        self.file_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.file_btn.setToolTip("点击选择，或把 .docx 拖到窗口任意位置")
+        self.file_btn.setMaximumWidth(190)
+        self.file_btn.clicked.connect(self._on_select_file)
+        right_col.addWidget(self.file_btn)
+
+        # 文件生成
         self.generate_btn = QPushButton("💾 文件生成")
         self.generate_btn.setObjectName("primaryBtn")
         self.generate_btn.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -461,11 +466,21 @@ class MainWindow(QMainWindow):
         self.generate_btn.clicked.connect(self._on_generate_file)
         right_col.addWidget(self.generate_btn)
 
+        # 打开目录 + 设置（同一行）
+        gen_row = QHBoxLayout()
+        gen_row.setSpacing(6)
         self.open_dir_cb = QCheckBox("打开目录")
         self.open_dir_cb.setChecked(False)
         self.open_dir_cb.setCursor(Qt.CursorShape.PointingHandCursor)
         self.open_dir_cb.setToolTip("勾选后，文件生成成功时自动打开输出目录")
-        right_col.addWidget(self.open_dir_cb)
+        gen_row.addWidget(self.open_dir_cb)
+        gen_row.addStretch()
+        self.settings_btn = QPushButton("⚙ 设置")
+        self.settings_btn.setObjectName("smallBtn")
+        self.settings_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.settings_btn.clicked.connect(self._show_settings_menu)
+        gen_row.addWidget(self.settings_btn)
+        right_col.addLayout(gen_row)
 
         body.addLayout(right_col)
 
@@ -481,46 +496,6 @@ class MainWindow(QMainWindow):
         self.progress_bar.setFixedWidth(200)
         self.progress_bar.setVisible(False)
         self.status_bar.addPermanentWidget(self.progress_bar)
-
-    def _create_header(self) -> QFrame:
-        """创建顶部区域
-
-        紧凑布局：单行 — [标题] [文件按钮(兼文件名提示)] <stretch> [⚙ 设置]
-        文件按钮在未加载文件时显示拖放提示，加载后显示当前文件名。
-        """
-        header = QFrame()
-        header.setObjectName("headerPanel")
-        layout = QVBoxLayout(header)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(4)
-
-        title_row = QHBoxLayout()
-        title_row.setSpacing(12)
-
-        title_label = QLabel("专利标记助手")
-        title_label.setObjectName("titleLabel")
-        title_row.addWidget(title_label)
-
-        # 文件选择按钮（紧凑，标题后；兼当前文件名提示）
-        self.file_btn = QPushButton("📂  拖入或点击选择 .docx 文件")
-        self.file_btn.setObjectName("fileBtn")
-        self.file_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.file_btn.clicked.connect(self._on_select_file)
-        self.file_btn.setMinimumWidth(280)
-        title_row.addWidget(self.file_btn, 1)
-
-        title_row.addStretch()
-
-        # 设置按钮（替代原「切换主题」单一按钮）
-        self.settings_btn = QPushButton("⚙ 设置")
-        self.settings_btn.setObjectName("smallBtn")
-        self.settings_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.settings_btn.clicked.connect(self._show_settings_menu)
-        title_row.addWidget(self.settings_btn)
-
-        layout.addLayout(title_row)
-
-        return header
 
     def _create_mark_tab(self) -> QWidget:
         """创建标记提取与标注标签页"""
