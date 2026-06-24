@@ -434,6 +434,85 @@ QSpinBox#nCustomSpin {
 QSpinBox#nCustomSpin:focus {
     border-color: #00bfa5;
 }
+
+/* ===== 右侧第二列（4列）「标记」操作按钮组 ===== */
+QLabel#markCaption {
+    color: #6b7785;
+    font-size: 11px;
+    font-weight: bold;
+    padding: 8px 2px 1px 2px;
+}
+
+QPushButton#navActionBtn {
+    text-align: left;
+    padding: 8px 12px;
+    font-size: 13px;
+    font-weight: 600;
+    min-height: 18px;
+    border-radius: 8px;
+    color: #cfd8e3;
+    background-color: rgba(255, 255, 255, 0.05);
+    border: 1px solid rgba(255, 255, 255, 0.12);
+}
+
+QPushButton#navActionBtn:hover {
+    background-color: rgba(0, 191, 165, 0.16);
+    border-color: rgba(0, 191, 165, 0.55);
+    color: #ffffff;
+}
+
+QPushButton#navActionBtn:pressed {
+    background-color: rgba(0, 191, 165, 0.28);
+}
+
+QPushButton#navActionBtn:disabled {
+    color: rgba(255, 255, 255, 0.28);
+    background-color: rgba(255, 255, 255, 0.03);
+    border-color: rgba(255, 255, 255, 0.06);
+}
+
+QPushButton#navActionBtn[kind="primary"] {
+    color: #ffffff;
+    background-color: #00bfa5;
+    border: 1px solid #00bfa5;
+}
+
+QPushButton#navActionBtn[kind="primary"]:hover {
+    background-color: #1ccbb4;
+    border-color: #1ccbb4;
+}
+
+QPushButton#navActionBtn[kind="primary"]:pressed {
+    background-color: #00897b;
+}
+
+QPushButton#navActionBtn[kind="primary"]:disabled {
+    color: rgba(255, 255, 255, 0.45);
+    background-color: rgba(0, 191, 165, 0.22);
+    border-color: transparent;
+}
+
+QPushButton#navActionBtn[kind="danger"] {
+    color: #ff8a80;
+    background-color: rgba(255, 82, 82, 0.10);
+    border: 1px solid rgba(255, 82, 82, 0.30);
+}
+
+QPushButton#navActionBtn[kind="danger"]:hover {
+    background-color: #ff5252;
+    border-color: #ff5252;
+    color: #ffffff;
+}
+
+QPushButton#navActionBtn[kind="danger"]:pressed {
+    background-color: #e53935;
+}
+
+QPushButton#navActionBtn[kind="danger"]:disabled {
+    color: rgba(255, 138, 128, 0.30);
+    background-color: rgba(255, 82, 82, 0.05);
+    border-color: rgba(255, 82, 82, 0.12);
+}
 """
 
 LIGHT_THEME_QSS = """
@@ -872,5 +951,84 @@ QSpinBox#nCustomSpin {
 
 QSpinBox#nCustomSpin:focus {
     border-color: #00bfa5;
+}
+
+/* ===== 右侧第二列（4列）「标记」操作按钮组 ===== */
+QLabel#markCaption {
+    color: #90a4ae;
+    font-size: 11px;
+    font-weight: bold;
+    padding: 8px 2px 1px 2px;
+}
+
+QPushButton#navActionBtn {
+    text-align: left;
+    padding: 8px 12px;
+    font-size: 13px;
+    font-weight: 600;
+    min-height: 18px;
+    border-radius: 8px;
+    color: #455a64;
+    background-color: #ffffff;
+    border: 1px solid rgba(0, 0, 0, 0.12);
+}
+
+QPushButton#navActionBtn:hover {
+    background-color: #e0f2f1;
+    border-color: #00bfa5;
+    color: #00796b;
+}
+
+QPushButton#navActionBtn:pressed {
+    background-color: #b2dfdb;
+}
+
+QPushButton#navActionBtn:disabled {
+    color: rgba(100, 100, 100, 0.4);
+    background-color: rgba(0, 0, 0, 0.03);
+    border-color: rgba(0, 0, 0, 0.06);
+}
+
+QPushButton#navActionBtn[kind="primary"] {
+    color: #ffffff;
+    background-color: #00bfa5;
+    border: 1px solid #00bfa5;
+}
+
+QPushButton#navActionBtn[kind="primary"]:hover {
+    background-color: #26c6b2;
+    border-color: #26c6b2;
+}
+
+QPushButton#navActionBtn[kind="primary"]:pressed {
+    background-color: #00897b;
+}
+
+QPushButton#navActionBtn[kind="primary"]:disabled {
+    color: #ffffff;
+    background-color: rgba(0, 191, 165, 0.40);
+    border-color: transparent;
+}
+
+QPushButton#navActionBtn[kind="danger"] {
+    color: #d32f2f;
+    background-color: rgba(255, 82, 82, 0.06);
+    border: 1px solid rgba(255, 82, 82, 0.30);
+}
+
+QPushButton#navActionBtn[kind="danger"]:hover {
+    background-color: #ffebee;
+    border-color: #ff5252;
+    color: #c62828;
+}
+
+QPushButton#navActionBtn[kind="danger"]:pressed {
+    background-color: #ffcdd2;
+}
+
+QPushButton#navActionBtn[kind="danger"]:disabled {
+    color: rgba(211, 47, 47, 0.35);
+    background-color: rgba(255, 82, 82, 0.04);
+    border-color: rgba(255, 82, 82, 0.12);
 }
 """

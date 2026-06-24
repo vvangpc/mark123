@@ -729,53 +729,68 @@ class MainWindow(QMainWindow):
         return group
 
     @staticmethod
-    def _nav_btn(text: str) -> QPushButton:
-        """4列内统一样式的按钮（同一模块内两按钮显示一致）。"""
-        btn = QPushButton(text)
-        btn.setObjectName("accentBtn")
-        btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        btn.setMinimumHeight(34)
-        return btn
+    def _nav_btn(text: str, kind: str = "") -> QPushButton:
+        """4列操作按钮：与「标记」模块同款 navActionBtn 风格（左对齐、整宽，
+        kind='primary' 实心强调 / 'danger' 危险）。"""
+        b = QPushButton(text)
+        b.setObjectName("navActionBtn")
+        if kind:
+            b.setProperty("kind", kind)
+        b.setCursor(Qt.CursorShape.PointingHandCursor)
+        return b
+
+    @staticmethod
+    def _nav_caption(text: str) -> QLabel:
+        """4列分组小标题（与「标记」模块 markCaption 同款）。"""
+        lab = QLabel(text)
+        lab.setObjectName("markCaption")
+        return lab
 
     def _build_typo_nav(self) -> QWidget:
-        """错别字模块的 4列控件：错别字检查 + 错别字词库（两按钮显示一致）。"""
+        """错别字模块 4列：检查 + 词库（参照标记模块的 navActionBtn 分组风格）。"""
         w = QWidget()
+        w.setObjectName("markActions")
         v = QVBoxLayout(w)
         v.setContentsMargins(0, 0, 0, 0)
-        v.setSpacing(6)
+        v.setSpacing(5)
 
-        self.typo_check_btn = self._nav_btn("🔍 错别字检查")
+        v.addWidget(self._nav_caption("检查"))
+        self.typo_check_btn = self._nav_btn("🔍 错别字检查", kind="primary")
         self.typo_check_btn.setEnabled(False)
         self.typo_check_btn.clicked.connect(self._on_typo_check)
         v.addWidget(self.typo_check_btn)
 
+        v.addWidget(self._nav_caption("词库"))
         self.wb_btn = self._nav_btn("")
         self.wb_btn.setToolTip("打开错别字词库编辑器（可增删 / 导入 / 导出）")
         self.wb_btn.clicked.connect(self._on_open_wordbank_dialog)
         v.addWidget(self.wb_btn)
 
-        v.addStretch()
+        v.addStretch(1)
         self._refresh_wordbank_label()
         return w
 
     def _build_dup_nav(self) -> QWidget:
-        """重复字模块的 4列控件：重复字词检查 + 忽略词库（两按钮显示一致）。"""
+        """重复字模块 4列：检查 + 忽略词库（参照标记模块的 navActionBtn 分组风格）。"""
         w = QWidget()
+        w.setObjectName("markActions")
         v = QVBoxLayout(w)
         v.setContentsMargins(0, 0, 0, 0)
-        v.setSpacing(6)
+        v.setSpacing(5)
 
-        self.dup_check_btn = self._nav_btn("🔁 重复字词检查")
+        v.addWidget(self._nav_caption("检查"))
+        self.dup_check_btn = self._nav_btn("🔁 重复字词检查", kind="primary")
         self.dup_check_btn.setEnabled(False)
         self.dup_check_btn.clicked.connect(self._on_dup_check)
         v.addWidget(self.dup_check_btn)
 
+        v.addWidget(self._nav_caption("词库"))
         self.dup_ignore_btn = self._nav_btn("")
         self.dup_ignore_btn.setToolTip("打开「重复字词忽略词库」编辑器")
         self.dup_ignore_btn.clicked.connect(self._on_open_dup_ignore_dialog)
         v.addWidget(self.dup_ignore_btn)
 
-        v.addStretch()
+        v.addStretch(1)
         self._refresh_dup_ignore_label()
         return w
 
