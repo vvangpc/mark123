@@ -420,8 +420,13 @@ class MainWindow(QMainWindow):
         left_split = QSplitter(Qt.Orientation.Vertical)
         left_split.setObjectName("mainSplit")
 
-        # 左上：专利内容常驻区
+        # 左上：专利内容常驻区（任务6：结构化实时编辑）
         self.content_area = ContentArea()
+        self.content_area.contentEdited.connect(self._on_content_edited)
+        self.content_area.editWarning.connect(
+            lambda msg: self._show_toast(msg, "warning")
+        )
+        self.content_area.editConfirmed.connect(self._on_content_confirmed)
         left_split.addWidget(self.content_area)
 
         # 左下：各「子功能」面板（每页一个子功能，由右侧两列导航切换；
@@ -939,8 +944,10 @@ class MainWindow(QMainWindow):
         action_v = QVBoxLayout(action_group)
 
         # 单一结果表格，两类检查共用（计数并入标题，不再单列计数行）
-        self.typo_table = QTableWidget(0, 5)
-        self.typo_table.setHorizontalHeaderLabels(["章节", "原文片段", "修改前", "修改后", "操作"])
+        self.typo_table = QTableWidget(0, 6)
+        self.typo_table.setHorizontalHeaderLabels(
+            ["章节", "原文片段", "修改前", "修改后", "修改", "忽略"]
+        )
         _th = self.typo_table.horizontalHeader()
         _th.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)  # 章节：自适应
         # 原文片段 / 修改前 / 修改后 均为 Interactive，可独立拖拽列边框；
@@ -949,18 +956,20 @@ class MainWindow(QMainWindow):
         _th.setSectionResizeMode(1, QHeaderView.ResizeMode.Interactive)       # 原文片段
         _th.setSectionResizeMode(2, QHeaderView.ResizeMode.Interactive)       # 修改前
         _th.setSectionResizeMode(3, QHeaderView.ResizeMode.Interactive)       # 修改后
-        _th.setSectionResizeMode(4, QHeaderView.ResizeMode.Fixed)             # 操作：固定，吸附右侧
+        _th.setSectionResizeMode(4, QHeaderView.ResizeMode.Fixed)            # 修改：固定
+        _th.setSectionResizeMode(5, QHeaderView.ResizeMode.Fixed)            # 忽略：固定，吸附右侧
         _th.setStretchLastSection(False)
         self.typo_table.setColumnWidth(1, 320)
         self.typo_table.setColumnWidth(2, 130)
         self.typo_table.setColumnWidth(3, 130)
-        self.typo_table.setColumnWidth(4, 72)
+        self.typo_table.setColumnWidth(4, 64)
+        self.typo_table.setColumnWidth(5, 64)
         self.typo_table.setAlternatingRowColors(True)
         self.typo_table.verticalHeader().setVisible(False)
         # 行高给文字留足空间
         self.typo_table.verticalHeader().setDefaultSectionSize(30)
         self.typo_table.verticalHeader().setMinimumSectionSize(28)
-        # 「忽略」列用普通文字单元格；单击列 3 触发忽略
+        # 「修改」「忽略」列用普通文字单元格；单击对应列触发应用单条 / 忽略
         self.typo_table.cellClicked.connect(self._on_typo_cell_clicked)
         action_v.addWidget(self.typo_table, 1)
 
@@ -1172,6 +1181,19 @@ class MainWindow(QMainWindow):
         # 失效重复字词检查的缓存 —— 下次点「重复字词检查」时强制重新扫描，
         # 确保新添加的忽略词立即生效
         self._invalidate_dup_cache()
+
+    def _on_content_edited(self):
+        """1框 专利内容被结构化编辑回写到内存后：失效错别字/重复字检查缓存，
+        下次检查时按编辑后的最新内存重新扫描（权项检查每次都读内存，无需额外处理）。"""
+        self._invalidate_typo_cache()
+        self._invalidate_dup_cache()
+
+    def _on_content_confirmed(self, count: int):
+        """点击 1框「✓ 确认修改」后的反馈提示。"""
+        if count > 0:
+            self._show_toast(f"已写入内存：{count} 段修改", "success")
+        else:
+            self._show_toast("没有需要写入的文本改动", "info")
 
     def _invalidate_typo_cache(self):
         """清空错别字检查缓存，若当前显示的就是错别字则清空表格"""
@@ -1472,6 +1494,8 @@ class MainWindow(QMainWindow):
         if self._is_busy():
             self._show_toast("正在处理中，请等待当前操作完成后再生成文件", "warning")
             return
+        # 落盘前先把 1框 里待回写的结构化编辑写入内存
+        self.content_area.flush_all()
         if not self.history_entries:
             reply = QMessageBox.question(
                 self, "未检测到修改",
@@ -1912,6 +1936,8 @@ class MainWindow(QMainWindow):
         if self._is_busy():
             self._show_toast("正在处理中，请等待当前操作完成", "warning")
             return
+        # 先把 1框 里待回写的结构化编辑落到内存，确保检查基于最新内容
+        self.content_area.flush_all()
         self._set_clean_buttons_enabled(False)
         self.progress_bar.setVisible(True)
         self.progress_bar.setValue(0)
@@ -2044,10 +2070,13 @@ class MainWindow(QMainWindow):
                                   corrections=corrections)
 
     def _on_typo_cell_clicked(self, row: int, col: int):
-        """单击「忽略」列 → 从表格与缓存中移除该行。其它列不做处理。"""
-        if col != 4:
-            return
+        """单击「修改」列(4) → 仅应用本条修正；「忽略」列(5) → 移除该行。其它列不处理。"""
         if row < 0 or row >= self.typo_table.rowCount():
+            return
+        if col == 4:
+            self._apply_single_correction(row)
+            return
+        if col != 5:
             return
         # 先回写当前所有编辑，再移除
         self._snapshot_table_to_active_cache()
@@ -2055,6 +2084,44 @@ class MainWindow(QMainWindow):
         if 0 <= row < len(data):
             data.pop(row)
         self._render_table_from_data(data)
+
+    def _apply_single_correction(self, row: int):
+        """「修改」：把单条结果的「修改后」写回内存（不影响其它行）。"""
+        if not self.doc_data or self._current_check_kind is None:
+            return
+        # 先把表格里的即时编辑回写到缓存，保证取到用户最新输入的「修改后」
+        self._snapshot_table_to_active_cache()
+        data = self._active_cache_list()
+        if not (0 <= row < len(data)):
+            return
+        item = data[row]
+        confirmed = (item.get("suggestion") or "").strip()
+        wrong = item.get("wrong", "")
+        if not (wrong and confirmed) or confirmed == wrong:
+            self._show_toast("该条没有可应用的修改（「修改后」为空或与原词相同）", "warning")
+            return
+
+        from core.cleaner import apply_typo_corrections
+        count = apply_typo_corrections(
+            self.doc_data["paragraphs"],
+            [{"para_idx": item["para_idx"], "wrong": wrong, "confirmed_fix": confirmed}],
+        )
+        if not count:
+            self._show_toast("未找到可替换的文本，可能内容已变动", "warning")
+            return
+
+        label_prefix = "错别字修正" if self._current_check_kind == "typo" else "重复字词修正"
+        self._add_history(f"{label_prefix}（1 处）", f"{wrong} → {confirmed}")
+        # 本条已应用 → 从缓存与表格移除；其余行的 para_idx 不受影响仍有效
+        data.pop(row)
+        self._render_table_from_data(data)
+        # 内存已变动 → 让 1框 与另一类检查缓存保持一致
+        self.content_area.load(self.doc_data)
+        if self._current_check_kind == "typo":
+            self._invalidate_dup_cache()
+        else:
+            self._invalidate_typo_cache()
+        self._show_toast(f"已修改：{wrong} → {confirmed}", "success")
 
     def _active_cache_list(self) -> list:
         """返回当前模式对应的缓存列表"""
@@ -2137,7 +2204,23 @@ class MainWindow(QMainWindow):
             fix_item = QTableWidgetItem(item.get("suggestion", ""))
             self.typo_table.setItem(row_idx, 3, fix_item)
 
-            # 列4：忽略 —— 普通文字单元格（点击由 cellClicked 捕获）
+            _act_font = QFont()
+            _act_font.setBold(True)
+
+            # 列4：修改 —— 仅把本条「修改后」写回内存（点击由 cellClicked 捕获）
+            fix_btn = QTableWidgetItem("修改")
+            fix_btn.setFlags(
+                Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable
+            )
+            fix_btn.setTextAlignment(
+                Qt.AlignmentFlag.AlignCenter | Qt.AlignmentFlag.AlignVCenter
+            )
+            fix_btn.setForeground(self._fg("#1565c0", "#79b8ff"))
+            fix_btn.setFont(_act_font)
+            fix_btn.setToolTip("把本条「修改后」写入内存（只应用这一条）")
+            self.typo_table.setItem(row_idx, 4, fix_btn)
+
+            # 列5：忽略 —— 普通文字单元格（点击由 cellClicked 捕获）
             ig_item = QTableWidgetItem("忽略")
             ig_item.setFlags(
                 Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable
@@ -2146,11 +2229,9 @@ class MainWindow(QMainWindow):
                 Qt.AlignmentFlag.AlignCenter | Qt.AlignmentFlag.AlignVCenter
             )
             ig_item.setForeground(self._fg("#00897b", "#4dd0c4"))
-            ig_font = QFont()
-            ig_font.setBold(True)
-            ig_item.setFont(ig_font)
+            ig_item.setFont(_act_font)
             ig_item.setToolTip("点击忽略此条")
-            self.typo_table.setItem(row_idx, 4, ig_item)
+            self.typo_table.setItem(row_idx, 5, ig_item)
 
     def _on_clean_finished(self, message: str):
         """清洗操作完成"""
@@ -2268,6 +2349,9 @@ class MainWindow(QMainWindow):
         if not self._claim_loaded or self._claim_start_idx is None:
             self._show_toast("请先加载包含权利要求书的文档", "warning")
             return
+
+        # 先把 1框 权利要求书的结构化编辑落到内存，确保检查基于最新内容
+        self.content_area.flush_all()
 
         try:
             from core.claim_check import run_all_checks
@@ -2435,7 +2519,12 @@ class MainWindow(QMainWindow):
             m = _re.search(r'『所述(.+?)』', msg) or _re.search(r'『(.+?)』', msg)
             if m:
                 search_key = m.group(1)
-        self.content_area.locate_in_claims(search_key)
+        # 优先按段落索引定位整行高亮（行=段）；para_idx 缺失时回退按文本查找
+        para_idx = item.get("para_idx", -1)
+        if isinstance(para_idx, int) and para_idx >= 0:
+            self.content_area.locate_paragraph(0, para_idx, search_key)
+        else:
+            self.content_area.locate_in_claims(search_key)
 
     def _on_claim_cell_clicked(self, row: int, col: int):
         """单击单元格 → 若是「忽略」列则触发忽略，其它列交给双击处理。"""

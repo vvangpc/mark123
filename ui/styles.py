@@ -492,6 +492,29 @@ QPushButton#navActionBtn[kind="primary"]:disabled {
     border-color: transparent;
 }
 
+/* 1框 标签栏右上角「确认修改」按钮（紧凑） */
+QPushButton#confirmEditBtn {
+    color: #ffffff;
+    background-color: #00bfa5;
+    border: 1px solid #00bfa5;
+    border-radius: 5px;
+    padding: 3px 12px;
+    margin: 2px 6px;
+    font-weight: 600;
+}
+QPushButton#confirmEditBtn:hover {
+    background-color: #1ccbb4;
+    border-color: #1ccbb4;
+}
+QPushButton#confirmEditBtn:pressed {
+    background-color: #00897b;
+}
+QPushButton#confirmEditBtn:disabled {
+    color: rgba(0, 0, 0, 0.30);
+    background-color: rgba(0, 191, 165, 0.14);
+    border-color: transparent;
+}
+
 QPushButton#navActionBtn[kind="danger"] {
     color: #ff8a80;
     background-color: rgba(255, 82, 82, 0.10);
@@ -1007,6 +1030,29 @@ QPushButton#navActionBtn[kind="primary"]:pressed {
 QPushButton#navActionBtn[kind="primary"]:disabled {
     color: #ffffff;
     background-color: rgba(0, 191, 165, 0.40);
+    border-color: transparent;
+}
+
+/* 1框 标签栏右上角「确认修改」按钮（紧凑） */
+QPushButton#confirmEditBtn {
+    color: #ffffff;
+    background-color: #00bfa5;
+    border: 1px solid #00bfa5;
+    border-radius: 5px;
+    padding: 3px 12px;
+    margin: 2px 6px;
+    font-weight: 600;
+}
+QPushButton#confirmEditBtn:hover {
+    background-color: #26c6b2;
+    border-color: #26c6b2;
+}
+QPushButton#confirmEditBtn:pressed {
+    background-color: #00897b;
+}
+QPushButton#confirmEditBtn:disabled {
+    color: rgba(255, 255, 255, 0.45);
+    background-color: rgba(0, 191, 165, 0.20);
     border-color: transparent;
 }
 
