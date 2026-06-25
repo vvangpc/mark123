@@ -12,8 +12,9 @@ from PyQt6.QtWidgets import (
     QGroupBox, QApplication, QCheckBox, QDialog, QSpinBox, QAbstractSpinBox,
     QButtonGroup, QTableWidget, QTableWidgetItem, QHeaderView,
     QLineEdit, QMenu, QSizePolicy,
+    QStyle, QStyleOptionButton, QStylePainter,
 )
-from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QThread, QPoint
+from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QThread, QPoint, QSize
 from PyQt6.QtGui import (
     QDragEnterEvent, QDropEvent, QTextCursor, QTextCharFormat, QColor, QFont,
 )
@@ -58,6 +59,43 @@ def _longest_nonspace_run(s: str) -> str:
         if len(seg) > len(best):
             best = seg
     return best
+
+
+class MarqueeButton(QPushButton):
+    """文件上传按钮：长文件名跑马灯滚动。
+
+    滚动只通过 paintEvent 重绘实现（`set_marquee_text` → `update()`），
+    **不** 调用 setText/updateGeometry，因此每帧不触发任何布局重排，
+    避免与 1框/2框/3列 分隔条拖拽、文档导入相互卡顿。
+    QSS 背景 / 颜色 / hover / 左对齐 全部由样式表绘制（drawControl）保留。
+    """
+
+    def __init__(self, text="", parent=None):
+        super().__init__(text, parent)
+        self._marquee_text = None   # None=普通绘制；非空=画此覆盖文本
+
+    # 宽度不随文件名增长：仅填充所在列的可用宽度，绝不因超长文件名撑大按钮 /
+    # 撑大右侧列 / 让窗口无法缩小（高度仍按样式）。超长部分由跑马灯滚动展示。
+    def sizeHint(self):
+        return QSize(0, super().sizeHint().height())
+
+    def minimumSizeHint(self):
+        return QSize(0, super().minimumSizeHint().height())
+
+    def set_marquee_text(self, s):
+        if s == self._marquee_text:
+            return
+        self._marquee_text = s
+        self.update()               # 仅重绘，不重排
+
+    def paintEvent(self, ev):
+        if self._marquee_text is None:
+            super().paintEvent(ev)
+            return
+        opt = QStyleOptionButton()
+        self.initStyleOption(opt)
+        opt.text = self._marquee_text
+        QStylePainter(self).drawControl(QStyle.ControlElement.CE_PushButton, opt)
 
 
 class AnnotateWorker(QThread):
@@ -472,7 +510,7 @@ class MainWindow(QMainWindow):
         right_col.addWidget(self.nav_panel, 1)
 
         # 文件上传（兼当前文件名提示），置于「文件生成」上方，与其等宽对齐
-        self.file_btn = QPushButton("📂 选择 / 拖入 docx")
+        self.file_btn = MarqueeButton("📂 选择 / 拖入 docx")
         self.file_btn.setObjectName("fileBtn")
         self.file_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.file_btn.setToolTip("点击选择，或把 .docx 拖到窗口任意位置")
@@ -1231,10 +1269,15 @@ class MainWindow(QMainWindow):
     # ===== 操作回调 =====
 
     def _set_file_button_name(self, filename: str):
-        """设置 file_btn 上的文件名，并启动跑马灯（溢出时滚动，由 tick 自行判定）。"""
+        """设置 file_btn 上的文件名，并启动跑马灯（溢出时滚动，由 tick 自行判定）。
+
+        这里 setText 一次确定基准文本；之后滚动只走 set_marquee_text(重绘不重排)，
+        避免每帧触发布局重排而与分隔条拖拽 / 文档导入相互卡顿。
+        """
         self._file_marquee_full = filename or ""
         self._file_marquee_pos = 0
         self.file_btn.setText(f"📄 {self._file_marquee_full}")
+        self.file_btn.set_marquee_text(None)
         if self._file_marquee_full:
             self._file_marquee_timer.start()
         else:
@@ -1243,7 +1286,7 @@ class MainWindow(QMainWindow):
     def _file_marquee_tick(self):
         """文件名跑马灯：前缀「📄 」固定，文件名在剩余宽度内左对齐；
         溢出时按字符窗口滑动——每次只显示一段恰好不超出可用宽度的子串，
-        既不触发省略号(…)，也无需自绘（QSS 完整保留）。"""
+        既不触发省略号(…)，也只重绘不重排（QSS 完整保留）。"""
         full = self._file_marquee_full
         if not full:
             self._file_marquee_timer.stop()
@@ -1253,8 +1296,8 @@ class MainWindow(QMainWindow):
         # 28 ≈ 左右内边距(12*2) + 虚线边框等余量
         name_avail = self.file_btn.width() - 28 - fm.horizontalAdvance(prefix)
         if name_avail <= 0 or fm.horizontalAdvance(full) <= name_avail:
-            # 不溢出：静态显示完整名（计时器继续跑，列宽变化时能自动重判）
-            self.file_btn.setText(prefix + full)
+            # 不溢出：恢复普通绘制（显示 setText 的完整文本）
+            self.file_btn.set_marquee_text(None)
             self._file_marquee_pos = 0
             return
         loop = full + "      "          # 循环间隔
@@ -1264,7 +1307,7 @@ class MainWindow(QMainWindow):
         end = start
         while end < start + len(loop) and fm.horizontalAdvance(s[start:end + 1]) <= name_avail:
             end += 1
-        self.file_btn.setText(prefix + s[start:end])
+        self.file_btn.set_marquee_text(prefix + s[start:end])
 
     def _on_select_file(self):
         """选择文件"""
