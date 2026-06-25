@@ -944,32 +944,30 @@ class MainWindow(QMainWindow):
         action_v = QVBoxLayout(action_group)
 
         # 单一结果表格，两类检查共用（计数并入标题，不再单列计数行）
-        self.typo_table = QTableWidget(0, 6)
+        # 去掉「原文片段」列——原文已在 1框 常驻显示，结果直接在 1框 内联高亮；
+        # 单击「修改前」会跳转到 1框 对应位置并标红。
+        self.typo_table = QTableWidget(0, 5)
         self.typo_table.setHorizontalHeaderLabels(
-            ["章节", "原文片段", "修改前", "修改后", "修改", "忽略"]
+            ["章节", "修改前", "修改后", "修改", "忽略"]
         )
         _th = self.typo_table.horizontalHeader()
         _th.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)  # 章节：自适应
-        # 原文片段 / 修改前 / 修改后 均为 Interactive，可独立拖拽列边框；
-        # 刻意不设中间 Stretch 列——否则拖某条分界线时 Stretch 列会吸收伸缩量，
-        # 表现为"拖修改前|修改后的线，动的却是原文片段|修改前的线"。
-        _th.setSectionResizeMode(1, QHeaderView.ResizeMode.Interactive)       # 原文片段
-        _th.setSectionResizeMode(2, QHeaderView.ResizeMode.Interactive)       # 修改前
-        _th.setSectionResizeMode(3, QHeaderView.ResizeMode.Interactive)       # 修改后
-        _th.setSectionResizeMode(4, QHeaderView.ResizeMode.Fixed)            # 修改：固定
-        _th.setSectionResizeMode(5, QHeaderView.ResizeMode.Fixed)            # 忽略：固定，吸附右侧
+        # 修改前 / 修改后 均为 Interactive，可独立拖拽列边框；不设 Stretch（同前理由）。
+        _th.setSectionResizeMode(1, QHeaderView.ResizeMode.Interactive)       # 修改前
+        _th.setSectionResizeMode(2, QHeaderView.ResizeMode.Interactive)       # 修改后
+        _th.setSectionResizeMode(3, QHeaderView.ResizeMode.Fixed)            # 修改：固定
+        _th.setSectionResizeMode(4, QHeaderView.ResizeMode.Fixed)            # 忽略：固定，吸附右侧
         _th.setStretchLastSection(False)
-        self.typo_table.setColumnWidth(1, 320)
-        self.typo_table.setColumnWidth(2, 130)
-        self.typo_table.setColumnWidth(3, 130)
+        self.typo_table.setColumnWidth(1, 200)
+        self.typo_table.setColumnWidth(2, 240)
+        self.typo_table.setColumnWidth(3, 64)
         self.typo_table.setColumnWidth(4, 64)
-        self.typo_table.setColumnWidth(5, 64)
         self.typo_table.setAlternatingRowColors(True)
         self.typo_table.verticalHeader().setVisible(False)
         # 行高给文字留足空间
         self.typo_table.verticalHeader().setDefaultSectionSize(30)
         self.typo_table.verticalHeader().setMinimumSectionSize(28)
-        # 「修改」「忽略」列用普通文字单元格；单击对应列触发应用单条 / 忽略
+        # 「修改前」单击跳转 1框；「修改」「忽略」列单击触发应用单条 / 忽略
         self.typo_table.cellClicked.connect(self._on_typo_cell_clicked)
         action_v.addWidget(self.typo_table, 1)
 
@@ -1469,6 +1467,11 @@ class MainWindow(QMainWindow):
         for line in detail.split("\n"):
             if line.strip():
                 self._log(f"   {line}")
+
+        # 标注/删除标记已写入内存 → 刷新 1框 显示最新效果，并失效检查缓存
+        self.content_area.load(self.doc_data)
+        self._invalidate_typo_cache()
+        self._invalidate_dup_cache()
 
         self._add_history(summary, detail)
         self.status_bar.showMessage(f"{summary} — 已写入内存，待生成文件")
@@ -2070,13 +2073,17 @@ class MainWindow(QMainWindow):
                                   corrections=corrections)
 
     def _on_typo_cell_clicked(self, row: int, col: int):
-        """单击「修改」列(4) → 仅应用本条修正；「忽略」列(5) → 移除该行。其它列不处理。"""
+        """单击「修改前」列(1) → 跳转 1框 高亮；「修改」列(3) → 应用本条；
+        「忽略」列(4) → 移除该行。其它列不处理。"""
         if row < 0 or row >= self.typo_table.rowCount():
             return
-        if col == 4:
+        if col == 1:
+            self._locate_typo_in_content(row)
+            return
+        if col == 3:
             self._apply_single_correction(row)
             return
-        if col != 5:
+        if col != 4:
             return
         # 先回写当前所有编辑，再移除
         self._snapshot_table_to_active_cache()
@@ -2084,6 +2091,20 @@ class MainWindow(QMainWindow):
         if 0 <= row < len(data):
             data.pop(row)
         self._render_table_from_data(data)
+
+    def _locate_typo_in_content(self, row: int):
+        """单击「修改前」：在 1框 跳转到该错别字/重复字位置并标红。"""
+        data = self._active_cache_list()
+        if not (0 <= row < len(data)):
+            return
+        item = data[row]
+        ok = self.content_area.locate_issue(
+            item.get("para_idx", -1),
+            item.get("wrong", ""),
+            int(item.get("occurrence", 1) or 1),
+        )
+        if not ok:
+            self._show_toast("未能在原文中定位该处（内容可能已变动）", "warning")
 
     def _apply_single_correction(self, row: int):
         """「修改」：把单条结果的「修改后」写回内存（不影响其它行）。"""
@@ -2132,7 +2153,7 @@ class MainWindow(QMainWindow):
         return []
 
     def _snapshot_table_to_active_cache(self):
-        """把表格 column-2（建议修改）的当前值写回到对应缓存的 suggestion 字段
+        """把表格「修改后」列(col 2)的当前值写回到对应缓存的 suggestion 字段
         —— 这样切换检查类型 / 重渲染时，用户已编辑的内容不会丢失。
         """
         if self._current_check_kind is None:
@@ -2141,19 +2162,9 @@ class MainWindow(QMainWindow):
         for r in range(self.typo_table.rowCount()):
             if r >= len(data):
                 break
-            fix_item = self.typo_table.item(r, 3)
+            fix_item = self.typo_table.item(r, 2)
             if fix_item is not None:
                 data[r]["suggestion"] = fix_item.text()
-
-    def _highlight_wrong_in_context(self, context: str, wrong: str) -> str:
-        """把 context 中第一次出现的 wrong 用【】括出，便于在表格里定位错处。
-        找不到（理论边界）则原样返回。用纯子串查找，wrong 含特殊字符也无影响。"""
-        if not context or not wrong:
-            return context or ""
-        idx = context.find(wrong)
-        if idx == -1:
-            return context
-        return f"{context[:idx]}【{context[idx:idx + len(wrong)]}】{context[idx + len(wrong):]}"
 
     def _fg(self, light_hex: str, dark_hex: str) -> QColor:
         """按当前主题返回表格前景色（深色主题需要更亮的色调保证对比度）"""
@@ -2175,6 +2186,9 @@ class MainWindow(QMainWindow):
             self.typo_result_group.setTitle(f"🔁 重复字词检查结果（共 {len(results)} 处）")
         self._set_apply_enabled(len(results) > 0)
 
+        # 1框 内联高亮：把当前结果集全部标黄（空表则清空高亮）
+        self.content_area.highlight_issues(results)
+
     def _fill_typo_table(self, results: list):
         self.typo_table.setRowCount(0)
         self.typo_table.setRowCount(len(results))
@@ -2187,27 +2201,21 @@ class MainWindow(QMainWindow):
             pos_item.setData(Qt.ItemDataRole.UserRole, item["para_idx"])
             self.typo_table.setItem(row_idx, 0, pos_item)
 
-            # 列1：原文片段（把命中的错词用【】括出，便于定位）
-            ctx_item = QTableWidgetItem(
-                self._highlight_wrong_in_context(item.get("context", ""), item.get("wrong", ""))
-            )
-            ctx_item.setFlags(ctx_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
-            self.typo_table.setItem(row_idx, 1, ctx_item)
-
-            # 列2：修改前（只读，显示原始错词）
+            # 列1：修改前（只读，显示原始错词；单击跳转到 1框 并标红）
             wrong_item = QTableWidgetItem(item.get("wrong", ""))
             wrong_item.setFlags(wrong_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
             wrong_item.setForeground(self._fg("#c62828", "#ff7b72"))
-            self.typo_table.setItem(row_idx, 2, wrong_item)
+            wrong_item.setToolTip("点击跳转到原文并高亮")
+            self.typo_table.setItem(row_idx, 1, wrong_item)
 
-            # 列3：修改后（可编辑）
+            # 列2：修改后（可编辑）
             fix_item = QTableWidgetItem(item.get("suggestion", ""))
-            self.typo_table.setItem(row_idx, 3, fix_item)
+            self.typo_table.setItem(row_idx, 2, fix_item)
 
             _act_font = QFont()
             _act_font.setBold(True)
 
-            # 列4：修改 —— 仅把本条「修改后」写回内存（点击由 cellClicked 捕获）
+            # 列3：修改 —— 仅把本条「修改后」写回内存（点击由 cellClicked 捕获）
             fix_btn = QTableWidgetItem("修改")
             fix_btn.setFlags(
                 Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable
@@ -2218,9 +2226,9 @@ class MainWindow(QMainWindow):
             fix_btn.setForeground(self._fg("#1565c0", "#79b8ff"))
             fix_btn.setFont(_act_font)
             fix_btn.setToolTip("把本条「修改后」写入内存（只应用这一条）")
-            self.typo_table.setItem(row_idx, 4, fix_btn)
+            self.typo_table.setItem(row_idx, 3, fix_btn)
 
-            # 列5：忽略 —— 普通文字单元格（点击由 cellClicked 捕获）
+            # 列4：忽略 —— 普通文字单元格（点击由 cellClicked 捕获）
             ig_item = QTableWidgetItem("忽略")
             ig_item.setFlags(
                 Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable
@@ -2231,7 +2239,7 @@ class MainWindow(QMainWindow):
             ig_item.setForeground(self._fg("#00897b", "#4dd0c4"))
             ig_item.setFont(_act_font)
             ig_item.setToolTip("点击忽略此条")
-            self.typo_table.setItem(row_idx, 5, ig_item)
+            self.typo_table.setItem(row_idx, 4, ig_item)
 
     def _on_clean_finished(self, message: str):
         """清洗操作完成"""
@@ -2244,6 +2252,12 @@ class MainWindow(QMainWindow):
         if action == "typo_apply":
             self._invalidate_typo_cache()
             self._invalidate_dup_cache()
+
+        # 改动文档内容的清洗操作（删"所述"/标点/应用错别字修正）已写入内存
+        # → 刷新 1框 显示最新效果。检测类（orphan/typo_check/dup_check）不改文档、
+        #   且会自带高亮渲染，故不在此刷新以免清掉高亮。
+        if action in ("suoshu", "punct", "typo_apply") and self.doc_data:
+            self.content_area.load(self.doc_data)
 
         # 孤立标记检测：结果只显示在自己卡片的小日志框，不写入全局清洗日志
         if action == "orphan" and hasattr(self, "orphan_result_text"):

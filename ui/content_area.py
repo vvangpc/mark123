@@ -17,6 +17,10 @@ ui/content_area.py — 左上常驻内容区（主舞台）
     等非文本节点）；检查 / 导出前主窗口也会调用 `flush_all()` 兜底回写；
   · 含图片/公式的段（`doc_parser._has_image`）只读，不参与回写，被改动时给出提示；
   · 双击定位高亮：`locate_paragraph` 按 para_idx 反查行号并整行高亮（供权项结果双击跳转）。
+
+阶段二·错别字/重复字内联高亮：`highlight_issues` 检查后把所有问题文字在对应标签页
+  标黄（仅覆盖 `wrong` 字符段，行=段 → 段内偏移==行内偏移，靠 typo 的 `occurrence`/
+  dup 首次出现反推偏移）；`locate_issue` 单击「修改前」时跳转到该段并把这一条改红强调。
 """
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QTextCursor, QColor, QTextCharFormat, QTextFormat
@@ -36,6 +40,8 @@ class ContentArea(QWidget):
 
     TAB_NAMES = ["权利要求书", "说明书", "说明书附图", "说明书摘要"]
     HIGHLIGHT = "#ffd966"          # 双击定位行高亮色（沿用权项预览框配色）
+    ISSUE_YELLOW = "#ffd54f"       # 错别字/重复字：全部检查项标黄
+    ISSUE_RED = "#ff5252"          # 错别字/重复字：当前点击项标红（配白色前景）
 
     # 任一专利段落被回写到内存后发出（主窗口据此让检查缓存失效）
     contentEdited = pyqtSignal()
@@ -68,6 +74,9 @@ class ContentArea(QWidget):
         self._para_maps: list[list[int]] = [[] for _ in self.TAB_NAMES]
         self._suppress = False           # 程序性填充时抑制 textChanged
         self._dirty: set[int] = set()    # 待回写的标签页索引
+        # 错别字/重复字内联高亮：每个标签页一组 (line, offset, length)；当前点击项单独记
+        self._issue_ranges: list[list[tuple]] = [[] for _ in self.TAB_NAMES]
+        self._active_issue: tuple | None = None   # (tab, line, offset, length)
 
         # —— 专利内容标签页（可编辑） ——
         self._edits: list[QTextEdit] = []
@@ -104,6 +113,8 @@ class ContentArea(QWidget):
     def clear(self):
         self._doc_data = None
         self._dirty.clear()
+        self._issue_ranges = [[] for _ in self.TAB_NAMES]
+        self._active_issue = None
         for i, e in enumerate(self._edits):
             self._para_maps[i] = []
             self._suppress = True
@@ -141,6 +152,9 @@ class ContentArea(QWidget):
             return
         self._dirty.add(tab)
         self._update_confirm_enabled()
+        # 编辑后字符偏移失效 → 清除内联高亮，避免标错位置
+        if self._issue_ranges[tab] or (self._active_issue and self._active_issue[0] == tab):
+            self.clear_issue_highlights()
 
     def _update_confirm_enabled(self):
         if hasattr(self, "_confirm_btn"):
@@ -263,6 +277,127 @@ class ContentArea(QWidget):
         sel.format = fmt
         sel.cursor = QTextCursor(block)
         ed.setExtraSelections([sel])
+
+    # ===== 错别字 / 重复字 内联高亮 =====
+    def highlight_issues(self, results: list) -> None:
+        """检查后把当前结果集里所有问题文字在对应标签页标黄（仅覆盖 wrong 字符段）。
+
+        results 为 typo / dup 结果列表，元素含 para_idx / wrong / occurrence(可选)。
+        反查或偏移失败的条目静默跳过；本调用整体重建高亮（清掉上一轮）。
+        """
+        self._issue_ranges = [[] for _ in self.TAB_NAMES]
+        self._active_issue = None
+        for item in results or []:
+            r = self._range_for_issue(item)
+            if r is None:
+                continue
+            tab, line, offset, length = r
+            self._issue_ranges[tab].append((line, offset, length))
+        for tab in range(len(self._edits)):
+            self._apply_issue_selections(tab)
+
+    def locate_issue(self, para_idx: int, wrong: str, occurrence: int = 1) -> bool:
+        """单击「修改前」：跳转到该问题所在段并把这一条标红强调（叠在黄底之上）。"""
+        r = self._range_for_issue(
+            {"para_idx": para_idx, "wrong": wrong, "occurrence": occurrence}
+        )
+        if r is None:
+            return False
+        tab, line, offset, length = r
+        self._active_issue = (tab, line, offset, length)
+        self.tabs.setCurrentIndex(tab)
+        ed = self._edits[tab]
+        block = ed.document().findBlockByNumber(line)
+        if block.isValid():
+            cur = QTextCursor(block)
+            cur.setPosition(block.position() + offset)
+            ed.setTextCursor(cur)
+            ed.ensureCursorVisible()
+        self._apply_issue_selections(tab)
+        return True
+
+    def clear_issue_highlights(self) -> None:
+        """清除全部内联高亮（黄+红）。"""
+        self._issue_ranges = [[] for _ in self.TAB_NAMES]
+        self._active_issue = None
+        for ed in self._edits:
+            ed.setExtraSelections([])
+
+    def _range_for_issue(self, item: dict):
+        """把一条结果解析为 (tab, line, offset, length)；失败返回 None。"""
+        para_idx = item.get("para_idx", -1)
+        wrong = item.get("wrong") or ""
+        if para_idx is None or para_idx < 0 or not wrong:
+            return None
+        tl = self._find_tab_line(para_idx)
+        if tl is None:
+            return None
+        tab, line = tl
+        block = self._edits[tab].document().findBlockByNumber(line)
+        if not block.isValid():
+            return None
+        offset = self._nth_occurrence(block.text(), wrong, int(item.get("occurrence", 1) or 1))
+        if offset < 0:
+            return None
+        return tab, line, offset, len(wrong)
+
+    def _apply_issue_selections(self, tab: int) -> None:
+        """按 _issue_ranges[tab] 铺黄底，再把 _active_issue（若属本 tab）铺红底。"""
+        ed = self._edits[tab]
+        sels = []
+        for (line, offset, length) in self._issue_ranges[tab]:
+            sel = self._make_selection(ed, line, offset, length, self.ISSUE_YELLOW)
+            if sel is not None:
+                sels.append(sel)
+        if self._active_issue and self._active_issue[0] == tab:
+            _t, line, offset, length = self._active_issue
+            sel = self._make_selection(
+                ed, line, offset, length, self.ISSUE_RED, fg="#ffffff"
+            )
+            if sel is not None:
+                sels.append(sel)
+        ed.setExtraSelections(sels)
+
+    def _make_selection(self, ed: QTextEdit, line: int, offset: int, length: int,
+                        bg: str, fg: str | None = None):
+        """造一个覆盖某行 [offset, offset+length) 字符段的 ExtraSelection。"""
+        block = ed.document().findBlockByNumber(line)
+        if not block.isValid():
+            return None
+        sel = QTextEdit.ExtraSelection()
+        fmt = QTextCharFormat()
+        fmt.setBackground(QColor(bg))
+        if fg:
+            fmt.setForeground(QColor(fg))
+        sel.format = fmt
+        cur = QTextCursor(block)
+        cur.setPosition(block.position() + offset)
+        cur.setPosition(
+            block.position() + offset + length, QTextCursor.MoveMode.KeepAnchor
+        )
+        sel.cursor = cur
+        return sel
+
+    def _find_tab_line(self, para_idx: int):
+        """反查 para_idx 所在的 (tab, line)；不在任何标签页返回 None。"""
+        for tab, pmap in enumerate(self._para_maps):
+            try:
+                return tab, pmap.index(para_idx)
+            except ValueError:
+                continue
+        return None
+
+    @staticmethod
+    def _nth_occurrence(text: str, needle: str, n: int) -> int:
+        """返回 needle 在 text 中第 n 次出现（1-indexed）的偏移；找不到返回 -1。"""
+        if not text or not needle or n < 1:
+            return -1
+        idx = -1
+        for _ in range(n):
+            idx = text.find(needle, idx + 1)
+            if idx == -1:
+                return -1
+        return idx
 
     # ── 内部：构建行=段映射 ──
     def _range_of(self, sections: dict, names: list[str]) -> list[int]:
