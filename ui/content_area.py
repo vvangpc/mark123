@@ -316,12 +316,66 @@ class ContentArea(QWidget):
         self._apply_issue_selections(tab)
         return True
 
+    def highlight_claim_issues(self, items: list) -> None:
+        """权项专用标黄：items 元素为 {para_idx, wrong}。
+
+        与 typo/dup 不同——权项的 para_idx 是「权项首段」，术语可能在该权项的后续
+        段落，故从首段所在行起**向后**找术语首次出现（行=段、各段为连续行）。
+        """
+        self._issue_ranges = [[] for _ in self.TAB_NAMES]
+        self._active_issue = None
+        for it in items or []:
+            r = self._range_for_issue_forward(it.get("para_idx", -1), it.get("wrong") or "")
+            if r is None:
+                continue
+            tab, line, offset, length = r
+            self._issue_ranges[tab].append((line, offset, length))
+        for tab in range(len(self._edits)):
+            self._apply_issue_selections(tab)
+
+    def locate_claim_issue(self, para_idx: int, wrong: str) -> bool:
+        """权项单击「说明」：从首段起向后找术语，跳转并标红。"""
+        r = self._range_for_issue_forward(para_idx, wrong)
+        if r is None:
+            return False
+        tab, line, offset, length = r
+        self._active_issue = (tab, line, offset, length)
+        self.tabs.setCurrentIndex(tab)
+        ed = self._edits[tab]
+        block = ed.document().findBlockByNumber(line)
+        if block.isValid():
+            cur = QTextCursor(block)
+            cur.setPosition(block.position() + offset)
+            ed.setTextCursor(cur)
+            ed.ensureCursorVisible()
+        self._apply_issue_selections(tab)
+        return True
+
     def clear_issue_highlights(self) -> None:
         """清除全部内联高亮（黄+红）。"""
         self._issue_ranges = [[] for _ in self.TAB_NAMES]
         self._active_issue = None
         for ed in self._edits:
             ed.setExtraSelections([])
+
+    def _range_for_issue_forward(self, para_idx: int, wrong: str):
+        """从 para_idx 所在行起，向后逐行找 wrong 首次出现；返回 (tab,line,offset,len)。"""
+        if para_idx is None or para_idx < 0 or not wrong:
+            return None
+        tl = self._find_tab_line(para_idx)
+        if tl is None:
+            return None
+        tab, start_line = tl
+        doc = self._edits[tab].document()
+        total = doc.blockCount()
+        for line in range(start_line, total):
+            block = doc.findBlockByNumber(line)
+            if not block.isValid():
+                break
+            off = block.text().find(wrong)
+            if off >= 0:
+                return tab, line, off, len(wrong)
+        return None
 
     def _range_for_issue(self, item: dict):
         """把一条结果解析为 (tab, line, offset, length)；失败返回 None。"""

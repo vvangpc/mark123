@@ -471,14 +471,19 @@ class MainWindow(QMainWindow):
         self.nav_panel.page_selected.connect(self.panel_stack.setCurrentIndex)
         right_col.addWidget(self.nav_panel, 1)
 
-        # 文件上传（紧凑；兼当前文件名提示），置于「文件生成」上方
+        # 文件上传（兼当前文件名提示），置于「文件生成」上方，与其等宽对齐
         self.file_btn = QPushButton("📂 选择 / 拖入 docx")
         self.file_btn.setObjectName("fileBtn")
         self.file_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.file_btn.setToolTip("点击选择，或把 .docx 拖到窗口任意位置")
-        self.file_btn.setMaximumWidth(190)
         self.file_btn.clicked.connect(self._on_select_file)
         right_col.addWidget(self.file_btn)
+        # 长文件名跑马灯滚动显示（字符窗口滑动，不触发省略号、保留 QSS）
+        self._file_marquee_full = ""
+        self._file_marquee_pos = 0
+        self._file_marquee_timer = QTimer(self)
+        self._file_marquee_timer.setInterval(120)
+        self._file_marquee_timer.timeout.connect(self._file_marquee_tick)
 
         # 文件生成
         self.generate_btn = QPushButton("💾 文件生成")
@@ -1091,33 +1096,30 @@ class MainWindow(QMainWindow):
         outer.addWidget(self.claim_status_label)
 
         hint = QLabel(
-            "表中仅展示问题，不写入最终文件；双击「上下文」跳到 1框「权利要求书」并高亮，"
-            "双击「说明」看完整描述；在 1框改完正文后再次「开始检查」重扫。"
+            "表中仅展示问题，不写入最终文件；可定位的问题已在 1框「权利要求书」标黄，"
+            "单击「说明」跳到 1框 并把该条标红；在 1框改完正文后再次「开始检查」重扫。"
         )
         hint.setObjectName("subtitleLabel")
         hint.setWordWrap(True)
         outer.addWidget(hint)
 
-        self.claim_result_table = QTableWidget(0, 5)
+        # 去「上下文」列——原文已在 1框 常驻并内联标黄；单击「说明」跳转 1框 标红。
+        self.claim_result_table = QTableWidget(0, 4)
         self.claim_result_table.setHorizontalHeaderLabels(
-            ["类型", "权项", "上下文", "说明", "操作"]
+            ["类型", "权项", "说明", "操作"]
         )
         h = self.claim_result_table.horizontalHeader()
         h.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
         h.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
-        h.setSectionResizeMode(2, QHeaderView.ResizeMode.Interactive)
-        h.setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
-        h.setSectionResizeMode(4, QHeaderView.ResizeMode.Fixed)
-        self.claim_result_table.setColumnWidth(4, 72)
-        self.claim_result_table.setColumnWidth(2, 240)
+        h.setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)         # 说明
+        h.setSectionResizeMode(3, QHeaderView.ResizeMode.Fixed)           # 操作
+        self.claim_result_table.setColumnWidth(3, 72)
         h.setStretchLastSection(False)
         self.claim_result_table.setAlternatingRowColors(True)
         self.claim_result_table.verticalHeader().setVisible(False)
         self.claim_result_table.verticalHeader().setDefaultSectionSize(30)
         self.claim_result_table.verticalHeader().setMinimumSectionSize(28)
-        self.claim_result_table.cellDoubleClicked.connect(
-            self._on_claim_result_double_clicked
-        )
+        # 单击「说明」跳转 1框；单击「操作」忽略（不再有双击行为）
         self.claim_result_table.cellClicked.connect(self._on_claim_cell_clicked)
         outer.addWidget(self.claim_result_table, 1)
         return widget
@@ -1228,6 +1230,42 @@ class MainWindow(QMainWindow):
 
     # ===== 操作回调 =====
 
+    def _set_file_button_name(self, filename: str):
+        """设置 file_btn 上的文件名，并启动跑马灯（溢出时滚动，由 tick 自行判定）。"""
+        self._file_marquee_full = filename or ""
+        self._file_marquee_pos = 0
+        self.file_btn.setText(f"📄 {self._file_marquee_full}")
+        if self._file_marquee_full:
+            self._file_marquee_timer.start()
+        else:
+            self._file_marquee_timer.stop()
+
+    def _file_marquee_tick(self):
+        """文件名跑马灯：前缀「📄 」固定，文件名在剩余宽度内左对齐；
+        溢出时按字符窗口滑动——每次只显示一段恰好不超出可用宽度的子串，
+        既不触发省略号(…)，也无需自绘（QSS 完整保留）。"""
+        full = self._file_marquee_full
+        if not full:
+            self._file_marquee_timer.stop()
+            return
+        prefix = "📄 "
+        fm = self.file_btn.fontMetrics()
+        # 28 ≈ 左右内边距(12*2) + 虚线边框等余量
+        name_avail = self.file_btn.width() - 28 - fm.horizontalAdvance(prefix)
+        if name_avail <= 0 or fm.horizontalAdvance(full) <= name_avail:
+            # 不溢出：静态显示完整名（计时器继续跑，列宽变化时能自动重判）
+            self.file_btn.setText(prefix + full)
+            self._file_marquee_pos = 0
+            return
+        loop = full + "      "          # 循环间隔
+        s = loop + loop
+        self._file_marquee_pos = (self._file_marquee_pos + 1) % len(loop)
+        start = self._file_marquee_pos
+        end = start
+        while end < start + len(loop) and fm.horizontalAdvance(s[start:end + 1]) <= name_avail:
+            end += 1
+        self.file_btn.setText(prefix + s[start:end])
+
     def _on_select_file(self):
         """选择文件"""
         if self._is_busy():
@@ -1271,7 +1309,7 @@ class MainWindow(QMainWindow):
 
             # 更新文件信息（按钮自身既是上传入口也是文件名提示）
             filename = os.path.basename(file_path)
-            self.file_btn.setText(f"📄  {filename}")
+            self._set_file_button_name(filename)
             self.file_btn.setToolTip(file_path)
 
             # 提取标记
@@ -2427,15 +2465,19 @@ class MainWindow(QMainWindow):
             no_item.setFlags(no_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
             self.claim_result_table.setItem(row_idx, 1, no_item)
 
-            ctx_item = QTableWidgetItem(item.get("context", ""))
-            ctx_item.setFlags(ctx_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
-            self.claim_result_table.setItem(row_idx, 2, ctx_item)
-
-            msg_item = QTableWidgetItem(item.get("message", ""))
+            # 列2：说明（message；单击跳转 1框 标红；tooltip 显示完整说明 + 建议，
+            # 替代被删的「双击弹窗看全文」）
+            msg = item.get("message", "")
+            msg_item = QTableWidgetItem(msg)
             msg_item.setFlags(msg_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
-            self.claim_result_table.setItem(row_idx, 3, msg_item)
+            tip = msg
+            sug = (item.get("suggestion") or "").strip()
+            if sug:
+                tip = f"{msg}\n建议：{sug}"
+            msg_item.setToolTip(tip)
+            self.claim_result_table.setItem(row_idx, 2, msg_item)
 
-            # 操作列：忽略 —— 普通文字单元格（点击由 cellClicked 捕获）
+            # 列3：操作（忽略）—— 普通文字单元格（点击由 cellClicked 捕获）
             ig_item = QTableWidgetItem("忽略")
             ig_item.setFlags(
                 Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable
@@ -2448,101 +2490,58 @@ class MainWindow(QMainWindow):
             ig_font.setBold(True)
             ig_item.setFont(ig_font)
             ig_item.setToolTip("点击忽略此条")
-            self.claim_result_table.setItem(row_idx, 4, ig_item)
+            self.claim_result_table.setItem(row_idx, 3, ig_item)
 
-    def _show_claim_result_detail(self, row: int):
-        """弹出只读对话框显示指定结果行的完整字段（避免 elide 截断）。"""
-        if row < 0 or row >= len(self._claim_results):
-            return
-        item = self._claim_results[row]
-        kind_map = {
-            "antecedent": "引用基础",
-            "dependency": "引用关系",
-            "vague": "不确定用语",
-            "numbering": "独立权项序号",
-            "multi_dep": "多项引用合法性",
-            "ending": "句号结尾",
-        }
-        kind_label = kind_map.get(item.get("kind"), item.get("kind") or "—")
-        claim_no = item.get("claim_no")
-        claim_label = f"权利要求{claim_no}" if claim_no else "—"
-        context = item.get("context") or ""
-        message = item.get("message") or ""
-        suggestion = item.get("suggestion") or ""
+        # 1框 内联高亮：把所有能定位的权项问题标黄（空结果→清空高亮）。
+        # 权项 para_idx 是「权项首段」，术语可能在后续段 → 用向后搜索版。
+        self.content_area.highlight_claim_issues(self._claim_highlight_items(results))
 
-        dlg = QDialog(self)
-        dlg.setWindowTitle("问题详情")
-        dlg.setMinimumSize(560, 360)
-        dlg.setModal(True)
+    def _claim_anchor(self, item: dict) -> str:
+        """从一条权项结果里抽取要在 1框 高亮的锚点文本。
 
-        lay = QVBoxLayout(dlg)
-        lay.setSpacing(10)
-
-        meta = QLabel(f"<b>类型：</b>{kind_label}　　<b>位置：</b>{claim_label}")
-        meta.setTextFormat(Qt.TextFormat.RichText)
-        lay.addWidget(meta)
-
-        lay.addWidget(QLabel("上下文："))
-        ctx_view = QPlainTextEdit()
-        ctx_view.setReadOnly(True)
-        ctx_view.setPlainText(context)
-        ctx_view.setMaximumHeight(90)
-        lay.addWidget(ctx_view)
-
-        lay.addWidget(QLabel("说明："))
-        msg_view = QPlainTextEdit()
-        msg_view.setReadOnly(True)
-        msg_view.setPlainText(message)
-        lay.addWidget(msg_view, 1)
-
-        if suggestion:
-            lay.addWidget(QLabel("建议："))
-            sug_view = QPlainTextEdit()
-            sug_view.setReadOnly(True)
-            sug_view.setPlainText(suggestion)
-            sug_view.setMaximumHeight(80)
-            lay.addWidget(sug_view)
-
-        btn_row = QHBoxLayout()
-        btn_row.addStretch()
-        close_btn = QPushButton("关闭")
-        close_btn.clicked.connect(dlg.accept)
-        btn_row.addWidget(close_btn)
-        lay.addLayout(btn_row)
-
-        dlg.exec()
-
-    def _on_claim_result_double_clicked(self, row: int, col: int):
-        """双击结果表：
-          - 第 3 列「说明」→ 弹出完整说明对话框；
-          - 第 2 列「上下文」→ 切到 1框「权利要求书」并查找 / 高亮上下文关键片段。
+        antecedent / vague 优先取 message 里『…』内的术语（所述X / W）；
+        其余类型回退取 context 的最长非空白片段（引用片段、句末片段等）。
         """
+        kind = item.get("kind")
+        msg = item.get("message", "")
+        if kind in ("antecedent", "vague"):
+            import re as _re
+            m = _re.search(r'『(.+?)』', msg)
+            if m:
+                return m.group(1)
+        return _longest_nonspace_run((item.get("context") or "").strip())
+
+    def _claim_highlight_items(self, results: list) -> list:
+        """把权项结果转成内联高亮所需的 {para_idx, wrong, occurrence} 列表。
+
+        锚点在对应段内找不到的（如序号类问题）由 content_area 自动跳过 →
+        即「只标能定位的问题」。
+        """
+        out = []
+        for it in results:
+            anchor = self._claim_anchor(it)
+            pid = it.get("para_idx", -1)
+            if anchor and isinstance(pid, int) and pid >= 0:
+                out.append({"para_idx": pid, "wrong": anchor, "occurrence": 1})
+        return out
+
+    def _locate_claim_in_content(self, row: int):
+        """单击「说明」：在 1框「权利要求书」跳转到该问题位置并标红。"""
         if row < 0 or row >= len(self._claim_results):
             return
-        if col == 3:
-            self._show_claim_result_detail(row)
-            return
-        if col != 2:
-            return
         item = self._claim_results[row]
-        context = (item.get("context") or "").strip()
-        search_key = _longest_nonspace_run(context)
-        if not search_key:
-            import re as _re
-            msg = item.get("message", "")
-            m = _re.search(r'『所述(.+?)』', msg) or _re.search(r'『(.+?)』', msg)
-            if m:
-                search_key = m.group(1)
-        # 优先按段落索引定位整行高亮（行=段）；para_idx 缺失时回退按文本查找
-        para_idx = item.get("para_idx", -1)
-        if isinstance(para_idx, int) and para_idx >= 0:
-            self.content_area.locate_paragraph(0, para_idx, search_key)
-        else:
-            self.content_area.locate_in_claims(search_key)
+        anchor = self._claim_anchor(item)
+        ok = False
+        if anchor:
+            ok = self.content_area.locate_claim_issue(item.get("para_idx", -1), anchor)
+        if not ok:
+            self._show_toast("未能在原文中定位该处（可能是序号类问题或内容已变动）", "warning")
 
     def _on_claim_cell_clicked(self, row: int, col: int):
-        """单击单元格 → 若是「忽略」列则触发忽略，其它列交给双击处理。"""
-        if col == 4:
+        """单击「说明」(col 2)→跳转 1框 标红；「操作」(col 3)→忽略该行。"""
+        if col == 2:
+            self._locate_claim_in_content(row)
+        elif col == 3:
             self._on_claim_ignore_row(row)
 
     def _on_claim_ignore_row(self, row: int):
