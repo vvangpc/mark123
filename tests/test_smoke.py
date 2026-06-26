@@ -38,8 +38,11 @@ def test_main_window_construct():
     assert hasattr(win.content_area, "history_edit"), "内容区应有操作历史页 history_edit"
     assert hasattr(win, "generate_btn"), "文件生成按钮应存在（已移到右侧）"
     assert hasattr(win, "panel_stack"), "应有左下模块面板栈 panel_stack"
-    assert win.panel_stack.count() == 7, f"预期 7 个子功能面板，实际 {win.panel_stack.count()}"
+    assert win.panel_stack.count() == 8, f"预期 8 个子功能面板，实际 {win.panel_stack.count()}"
     assert hasattr(win, "nav_panel"), "应有右侧两列导航 nav_panel"
+    # 说明书检查模块（实施例编号 / 摘要字数，共用结果表）
+    for attr in ("spec_emb_btn", "spec_abs_btn", "spec_result_table"):
+        assert hasattr(win, attr), f"说明书检查模块缺少 {attr}"
 
     # 初始状态
     assert win.doc_data is None

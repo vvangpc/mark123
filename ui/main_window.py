@@ -378,6 +378,11 @@ class MainWindow(QMainWindow):
         self._claim_loaded = False         # 当前文档是否已加载过权利要求书内容
         self._claim_n = 2                  # 当前滑窗字数（按钮 / 自定义共享）
         self._claim_session_ignore = set() # 本次会话内结果行「忽略」记录（不持久化）
+        # 说明书检查（实施例编号 / 摘要字数）状态
+        self._spec_impl_ok = False         # 当前文档是否有「具体实施方式」章节
+        self._spec_abs_ok = False          # 当前文档是否有「说明书摘要」章节
+        self._spec_results = []            # 当前说明书检查结果缓存
+        self._spec_kind = None             # 当前结果属于哪个检查（embodiment / abstract）
 
         # 配置管理器
         from config.config_manager import AppSettings
@@ -477,6 +482,7 @@ class MainWindow(QMainWindow):
         self.panel_stack.addWidget(self._create_typo_tab())                      # 4 错别字 / 重复字
         self.panel_stack.addWidget(self._create_claim_check_tab())               # 5 权利要求书检查
         self.panel_stack.addWidget(self._create_replace_page())                  # 6 清洗：全文替换（输入框）
+        self.panel_stack.addWidget(self._create_spec_tab())                      # 7 说明书检查（实施例 / 摘要，共享结果表）
         left_split.addWidget(self.panel_stack)
         # 2框允许被分隔条自由收缩 / 收起：QStackedWidget 默认最小高度取最高页（如结果表），
         # 显式置 0，避免显示矮小卡片时 2框 仍被撑高、分隔条拖不下去（红框区收不掉）。
@@ -505,6 +511,7 @@ class MainWindow(QMainWindow):
             ("📝 错别字", self._build_typo_nav(), 4),  # 控件型：错别字检查 + 错别字词库
             ("🔁 重复字", self._build_dup_nav(), 4),   # 控件型：重复字检查 + 忽略词库（共用 2框 结果表）
             ("⚖️ 权项", self._build_claim_nav(), 5),  # 控件型：检查参数 + 开始检查在 4列
+            ("📑 说明书", self._build_spec_nav(), 7),  # 控件型：实施例编号 / 摘要字数（共用 2框 结果表）
         ])
         self.nav_panel.page_selected.connect(self.panel_stack.setCurrentIndex)
         right_col.addWidget(self.nav_panel, 1)
@@ -1382,6 +1389,8 @@ class MainWindow(QMainWindow):
 
             # 把权利要求书内容加载到新 Tab
             self._claim_tab_load_from_doc()
+            # 说明书检查：按章节存在性启停「实施例编号 / 摘要字数」按钮
+            self._spec_tab_load_from_doc()
 
             # 作废上一份文档的错别字/重复字词检查缓存——
             # 旧结果的 para_idx 指向旧文档，残留会导致新文档显示
@@ -1831,6 +1840,9 @@ class MainWindow(QMainWindow):
         self._set_apply_enabled(enabled and bool(self._active_cache_list()))
         # 权要 Tab
         self.claim_check_btn.setEnabled(enabled and self._claim_loaded)
+        # 说明书检查（按各自章节存在性）
+        self.spec_emb_btn.setEnabled(enabled and self._spec_impl_ok)
+        self.spec_abs_btn.setEnabled(enabled and self._spec_abs_ok)
         # generate_btn 仅在有历史时启用
         self.generate_btn.setEnabled(enabled and bool(self.history_entries))
 
@@ -2638,6 +2650,202 @@ class MainWindow(QMainWindow):
         ]
         self._render_claim_results(self._claim_results)
         self._update_claim_status_bar()
+
+    # ─────────────────────────────────────────
+    # 说明书检查（实施例编号 / 摘要字数；共用 2框 结果表 + 1框 内联高亮）
+    # ─────────────────────────────────────────
+    def _build_spec_nav(self) -> QWidget:
+        """说明书模块 4列：实施例编号 / 摘要字数（后续检查在此加按钮即可）。"""
+        w = QWidget()
+        w.setObjectName("markActions")
+        v = QVBoxLayout(w)
+        v.setContentsMargins(0, 0, 0, 0)
+        v.setSpacing(5)
+
+        v.addWidget(self._nav_caption("检查"))
+        self.spec_emb_btn = self._nav_btn("📑 实施例编号", kind="primary")
+        self.spec_emb_btn.setEnabled(False)
+        self.spec_emb_btn.setToolTip("校验「具体实施方式」中 实施例一/二/三… 是否从一连续、无重复、无颠倒")
+        self.spec_emb_btn.clicked.connect(lambda: self._on_spec_check("embodiment"))
+        v.addWidget(self.spec_emb_btn)
+
+        self.spec_abs_btn = self._nav_btn("📊 摘要字数")
+        self.spec_abs_btn.setEnabled(False)
+        self.spec_abs_btn.setToolTip("校验「说明书摘要」文字部分是否超过 300 字")
+        self.spec_abs_btn.clicked.connect(lambda: self._on_spec_check("abstract"))
+        v.addWidget(self.spec_abs_btn)
+
+        v.addStretch(1)
+        return w
+
+    def _create_spec_tab(self) -> QWidget:
+        """说明书检查结果页（2框）。检查在 4列；结果在此表，组标题随检查类型动态。"""
+        widget = QWidget()
+        outer = QVBoxLayout(widget)
+        outer.setContentsMargins(0, 8, 0, 0)
+        outer.setSpacing(8)
+
+        self.spec_status_label = QLabel("请先打开 docx 文件")
+        self.spec_status_label.setObjectName("subtitleLabel")
+        outer.addWidget(self.spec_status_label)
+
+        hint = QLabel("可定位的问题已在 1框 标黄；单击「说明」跳到对应标签并把该条标红。")
+        hint.setObjectName("subtitleLabel")
+        hint.setWordWrap(True)
+        outer.addWidget(hint)
+
+        self.spec_result_group = QGroupBox("📑 说明书检查结果")
+        g = QVBoxLayout(self.spec_result_group)
+        self.spec_result_table = QTableWidget(0, 4)
+        self.spec_result_table.setHorizontalHeaderLabels(["类型", "定位", "说明", "操作"])
+        h = self.spec_result_table.horizontalHeader()
+        h.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+        h.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+        h.setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)          # 说明
+        h.setSectionResizeMode(3, QHeaderView.ResizeMode.Fixed)            # 操作
+        self.spec_result_table.setColumnWidth(3, 72)
+        h.setStretchLastSection(False)
+        self.spec_result_table.setAlternatingRowColors(True)
+        self.spec_result_table.verticalHeader().setVisible(False)
+        self.spec_result_table.verticalHeader().setDefaultSectionSize(30)
+        self.spec_result_table.verticalHeader().setMinimumSectionSize(28)
+        self.spec_result_table.cellClicked.connect(self._on_spec_cell_clicked)
+        g.addWidget(self.spec_result_table, 1)
+        outer.addWidget(self.spec_result_group, 1)
+        return widget
+
+    def _spec_tab_load_from_doc(self):
+        """_load_document 成功后：按章节存在性启停说明书检查按钮、清空旧结果。"""
+        if not self.doc_data:
+            return
+        sections = self.doc_data.get("sections", {})
+        self._spec_impl_ok = sections.get("具体实施方式") is not None
+        self._spec_abs_ok = (sections.get("说明书摘要") or sections.get("摘要")) is not None
+        self._spec_results = []
+        self._spec_kind = None
+        self.spec_result_table.setRowCount(0)
+        self.spec_result_group.setTitle("📑 说明书检查结果")
+        self.spec_emb_btn.setEnabled(self._spec_impl_ok)
+        self.spec_abs_btn.setEnabled(self._spec_abs_ok)
+        bits = []
+        if self._spec_impl_ok:
+            bits.append("具体实施方式")
+        if self._spec_abs_ok:
+            bits.append("说明书摘要")
+        if bits:
+            self.spec_status_label.setText("已加载：" + " / ".join(bits) + "  ·  点上方「检查」")
+        else:
+            self.spec_status_label.setText("未识别到 具体实施方式 / 说明书摘要 章节")
+
+    def _on_spec_check(self, kind: str):
+        """运行说明书检查（embodiment / abstract）：填共享结果表 + 1框 内联高亮。"""
+        if not self.doc_data:
+            self._show_toast("请先打开文档！", "error")
+            return
+        # 落 1框 结构化编辑到内存，确保检查基于最新内容
+        self.content_area.flush_all()
+        try:
+            from core.spec_check import check_embodiment_numbering, check_abstract_length
+            paras = self.doc_data["paragraphs"]
+            sections = self.doc_data.get("sections", {})
+            if kind == "embodiment":
+                results = check_embodiment_numbering(paras, sections)
+            else:
+                results = check_abstract_length(paras, sections)
+        except Exception as e:
+            import traceback as tb
+            QMessageBox.critical(
+                self, "检查失败",
+                f"说明书检查出现异常：\n{e}\n\n{tb.format_exc()}"
+            )
+            return
+
+        self._spec_results = results
+        self._spec_kind = kind
+        self._render_spec_results(results, kind)
+        if results:
+            self._show_toast(f"发现 {len(results)} 处问题", "warning")
+        else:
+            name = "实施例编号" if kind == "embodiment" else "摘要字数"
+            self._show_toast(f"{name}检查：未发现问题", "success")
+
+    def _render_spec_results(self, results: list, kind: str):
+        """渲染说明书检查结果到共享表，并把可定位项在 1框 标黄。"""
+        KIND_LABELS = {
+            "emb_start": "起始", "emb_gap": "缺号", "emb_dup": "重号",
+            "emb_order": "顺序", "abstract_len": "字数",
+        }
+        title = "实施例编号检查" if kind == "embodiment" else "摘要字数检查"
+        self.spec_result_group.setTitle(f"📑 {title}（{len(results)}）")
+        self.spec_result_table.setRowCount(0)
+        for row_idx, item in enumerate(results):
+            self.spec_result_table.insertRow(row_idx)
+
+            kind_item = QTableWidgetItem(KIND_LABELS.get(item.get("kind"), item.get("kind", "")))
+            kind_item.setFlags(kind_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+            self.spec_result_table.setItem(row_idx, 0, kind_item)
+
+            # 列1：定位（实施例标题文本；摘要类不展示越界长串，固定显示「摘要」）
+            loc = "摘要" if item.get("kind") == "abstract_len" else (item.get("wrong") or "")
+            loc_item = QTableWidgetItem(loc)
+            loc_item.setFlags(loc_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+            self.spec_result_table.setItem(row_idx, 1, loc_item)
+
+            msg = item.get("message", "")
+            msg_item = QTableWidgetItem(msg)
+            msg_item.setFlags(msg_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+            sug = (item.get("suggestion") or "").strip()
+            msg_item.setToolTip(f"{msg}\n建议：{sug}" if sug else msg)
+            self.spec_result_table.setItem(row_idx, 2, msg_item)
+
+            ig_item = QTableWidgetItem("忽略")
+            ig_item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
+            ig_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter | Qt.AlignmentFlag.AlignVCenter)
+            ig_item.setForeground(self._fg("#00897b", "#4dd0c4"))
+            ig_font = QFont()
+            ig_font.setBold(True)
+            ig_item.setFont(ig_font)
+            ig_item.setToolTip("点击忽略此条")
+            self.spec_result_table.setItem(row_idx, 3, ig_item)
+
+        # 1框 内联高亮（实施例→说明书 tab / 摘要→说明书摘要 tab；空结果→清空高亮）
+        self.content_area.highlight_issues(self._spec_highlight_items(results))
+
+    def _spec_highlight_items(self, results: list) -> list:
+        """把说明书结果转成内联高亮 {para_idx, wrong, occurrence}；不可定位项跳过。"""
+        out = []
+        for r in results:
+            wrong = r.get("wrong")
+            pid = r.get("para_idx", -1)
+            if wrong and isinstance(pid, int) and pid >= 0:
+                out.append({"para_idx": pid, "wrong": wrong, "occurrence": 1})
+        return out
+
+    def _on_spec_cell_clicked(self, row: int, col: int):
+        """单击「说明」(col 2)→跳转 1框 标红；「操作」(col 3)→移除该行。"""
+        if col == 2:
+            self._locate_spec_in_content(row)
+        elif col == 3:
+            self._on_spec_ignore_row(row)
+
+    def _locate_spec_in_content(self, row: int):
+        """单击「说明」：在 1框 对应标签跳转到该处并标红（实施例→说明书 / 摘要→摘要）。"""
+        if row < 0 or row >= len(self._spec_results):
+            return
+        item = self._spec_results[row]
+        wrong = item.get("wrong") or ""
+        ok = False
+        if wrong:
+            ok = self.content_area.locate_issue(item.get("para_idx", -1), wrong, 1)
+        if not ok:
+            self._show_toast("未能在原文中定位该处（可能内容已变动）", "warning")
+
+    def _on_spec_ignore_row(self, row: int):
+        """忽略本条：仅从当前结果表移除并刷新（不写词库；编号类无术语可记）。"""
+        if row < 0 or row >= len(self._spec_results):
+            return
+        self._spec_results = [r for i, r in enumerate(self._spec_results) if i != row]
+        self._render_spec_results(self._spec_results, self._spec_kind or "embodiment")
 
     def _on_claim_ignore_dialog(self):
         """打开忽略词库编辑对话框"""
