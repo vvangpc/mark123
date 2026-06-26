@@ -10,7 +10,7 @@
 ; MyAppVersion 支持 CI 用 `iscc /DMyAppVersion=3.6 installer.iss` 命令行覆盖；
 ; 本地直接 iscc installer.iss 时走下面的默认值（应与 version.py 同步）
 #ifndef MyAppVersion
-  #define MyAppVersion "3.5"
+  #define MyAppVersion "4.0.0"
 #endif
 #define MyAppPublisher "vvangpc"
 #define MyAppExeName "专利标记助手.exe"
