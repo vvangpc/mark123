@@ -21,12 +21,22 @@ ui/content_area.py — 左上常驻内容区（主舞台）
 阶段二·错别字/重复字内联高亮：`highlight_issues` 检查后把所有问题文字在对应标签页
   标黄（仅覆盖 `wrong` 字符段，行=段 → 段内偏移==行内偏移，靠 typo 的 `occurrence`/
   dup 首次出现反推偏移）；`locate_issue` 单击「修改前」时跳转到该段并把这一条改红强调。
+
+阶段三·内联富显示：含图片/公式的标签页改用富文本构建（`_build_rich`）——按段内文档顺序
+  插入文本与图片（附图 PNG/JPEG、公式 WMF/EMF 预览经 GDI 转 QImage），**每段仍是一个 block、
+  内联对象是块内 U+FFFC 不增行**，故行=段/回写/高亮模型不变；含对象段沿用 `_has_image` 只读跳过
+  回写。无对象的标签页保持 `setPlainText` 快速可编辑路径。
 """
-from PyQt6.QtCore import Qt, pyqtSignal
-from PyQt6.QtGui import QTextCursor, QColor, QTextCharFormat, QTextFormat
+from PyQt6.QtCore import Qt, QTimer, QUrl, pyqtSignal
+from PyQt6.QtGui import (
+    QTextCursor, QColor, QTextCharFormat, QTextFormat, QTextDocument,
+    QTextImageFormat,
+)
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QTabWidget, QTextEdit, QPushButton,
 )
+
+from ui.render.media import has_renderable_object, iter_content, scale_to_width
 
 from core.doc_parser import _has_image
 from core.paragraph_edit import set_paragraph_text
@@ -77,6 +87,14 @@ class ContentArea(QWidget):
         # 错别字/重复字内联高亮：每个标签页一组 (line, offset, length)；当前点击项单独记
         self._issue_ranges: list[list[tuple]] = [[] for _ in self.TAB_NAMES]
         self._active_issue: tuple | None = None   # (tab, line, offset, length)
+        # 阶段三富显示：图片/公式预览 QImage 缓存（rId→QImage，含负缓存）；
+        # 哪些标签页走了富文本（含对象）以便窗口缩放时按宽重排
+        self._img_cache: dict = {}
+        self._rich_tabs: set[int] = set()
+        self._resize_timer = QTimer(self)
+        self._resize_timer.setSingleShot(True)
+        self._resize_timer.setInterval(200)
+        self._resize_timer.timeout.connect(self._relayout_rich_tabs)
 
         # —— 专利内容标签页（可编辑） ——
         self._edits: list[QTextEdit] = []
@@ -115,6 +133,8 @@ class ContentArea(QWidget):
         self._dirty.clear()
         self._issue_ranges = [[] for _ in self.TAB_NAMES]
         self._active_issue = None
+        self._rich_tabs = set()
+        self._img_cache = {}
         for i, e in enumerate(self._edits):
             self._para_maps[i] = []
             self._suppress = True
@@ -139,12 +159,76 @@ class ContentArea(QWidget):
         self._para_maps[2] = self._range_of(sections, ["说明书附图"])
         self._para_maps[3] = self._range_of(sections, ["说明书摘要", "摘要附图"])
 
+        document = doc_data.get("document")
         for i, pmap in enumerate(self._para_maps):
-            edit = self._edits[i]
-            self._suppress = True
+            self._fill_tab(i, pmap, paras, document)
+
+    def _fill_tab(self, i: int, pmap: list, paras: list, document) -> None:
+        """含图片/公式的标签页走富文本，否则走纯文本快速路径。"""
+        edit = self._edits[i]
+        needs_rich = bool(pmap) and document is not None and any(
+            has_renderable_object(paras[idx], document, self._img_cache) for idx in pmap
+        )
+        self._suppress = True
+        if needs_rich:
+            self._build_rich(edit, pmap, paras, document)
+            self._rich_tabs.add(i)
+        else:
             edit.setPlainText("\n".join(paras[idx].text for idx in pmap))
+            self._rich_tabs.discard(i)
+        self._suppress = False
+        edit.setReadOnly(not pmap)   # 仅在该标签页有内容时开放编辑
+
+    def _build_rich(self, edit: QTextEdit, pmap: list, paras: list, document) -> None:
+        """逐段构建富文本：每段一个 block，段内按文档顺序插文本/内联图片（不增行）。"""
+        edit.clear()
+        doc = edit.document()
+        max_w = max(64, edit.viewport().width() - 24)
+        cursor = QTextCursor(doc)
+        cursor.movePosition(QTextCursor.MoveOperation.Start)
+        for n, idx in enumerate(pmap):
+            if n > 0:
+                cursor.insertBlock()
+            for kind, payload in iter_content(paras[idx], document, self._img_cache):
+                if kind == "text":
+                    if payload:
+                        cursor.insertText(payload)
+                elif kind == "placeholder":
+                    cursor.insertText(payload)
+                elif kind == "image":
+                    img = scale_to_width(payload, max_w)
+                    name = f"mem://{id(payload)}"
+                    doc.addResource(QTextDocument.ResourceType.ImageResource,
+                                    QUrl(name), img)
+                    fmt = QTextImageFormat()
+                    fmt.setName(name)
+                    fmt.setWidth(img.width())
+                    fmt.setHeight(img.height())
+                    cursor.insertImage(fmt)
+
+    def resizeEvent(self, ev):
+        super().resizeEvent(ev)
+        # 含图片/公式的标签页防抖重排，使附图/公式随 1框 宽度自适应
+        if self._rich_tabs:
+            self._resize_timer.start()
+
+    def _relayout_rich_tabs(self):
+        """窗口缩放后按新宽度重建富文本标签页（QImage 走缓存，不重解码/重渲染 GDI）。"""
+        if self._doc_data is None or not self._rich_tabs:
+            return
+        paras = self._doc_data.get("paragraphs", [])
+        document = self._doc_data.get("document")
+        if document is None:
+            return
+        for i in list(self._rich_tabs):
+            pmap = self._para_maps[i]
+            if not pmap:
+                continue
+            self._suppress = True
+            self._build_rich(self._edits[i], pmap, paras, document)
             self._suppress = False
-            edit.setReadOnly(not pmap)   # 仅在该标签页有内容时开放编辑
+        # 重排后此前的内联高亮失效（block 重建）→ 清掉，避免错位
+        self.clear_issue_highlights()
 
     # ===== 编辑 → 手动确认回写 =====
     def _on_text_changed(self, tab: int):
@@ -214,7 +298,8 @@ class ContentArea(QWidget):
             para = paras[idx]
             if _has_image(para):
                 # 含图片/公式段只读：不回写；若被改动则提示
-                if line != para.text:
+                # （内联对象在 QTextEdit 里是 U+FFFC 占位符，比较时先剔除，免误报）
+                if line.replace("￼", "") != para.text:
                     readonly_touched = True
                 continue
             if set_paragraph_text(para, line):
