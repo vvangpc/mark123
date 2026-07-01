@@ -574,8 +574,8 @@ class MainWindow(QMainWindow):
         self.status_bar.addPermanentWidget(self.progress_bar)
 
     def _create_mark_tab(self) -> QWidget:
-        """左下（2框）「标记」面板：只保留「附图标记字典」。
-        所有标记操作按钮已移至右侧第二列（4列），见 _create_mark_actions()。"""
+        """左下（2框）「标记」面板：附图标记字典编辑框 + 贴身的「清空标记」按钮。
+        其余标记操作按钮在右侧第二列（4列），见 _create_mark_actions()。"""
         widget = QWidget()
         layout = QVBoxLayout(widget)
         layout.setContentsMargins(0, 8, 0, 0)
@@ -591,9 +591,22 @@ class MainWindow(QMainWindow):
         )
         marks_layout.addWidget(self.marks_edit, 1)
 
+        # 底部一行：左侧标记计数，右侧「清空标记」按钮
+        # （清空的就是本编辑框，故按钮贴身放在 2框，避免混在 4列 里误触）
+        footer = QHBoxLayout()
         self.mark_count_label = QLabel("")
         self.mark_count_label.setObjectName("subtitleLabel")
-        marks_layout.addWidget(self.mark_count_label)
+        footer.addWidget(self.mark_count_label)
+        footer.addStretch(1)
+
+        self.clear_marks_btn = QPushButton("🗑️ 清空标记")
+        self.clear_marks_btn.setObjectName("navActionBtn")
+        self.clear_marks_btn.setProperty("kind", "danger")
+        self.clear_marks_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.clear_marks_btn.setToolTip("清空「附图标记字典」编辑框")
+        self.clear_marks_btn.clicked.connect(lambda: self.marks_edit.clear())
+        footer.addWidget(self.clear_marks_btn)
+        marks_layout.addLayout(footer)
 
         layout.addWidget(marks_group, 1)
         return widget
@@ -602,8 +615,8 @@ class MainWindow(QMainWindow):
         """右侧第二列（4列）的「标记」操作按钮组：竖排、风格统一、分三组。
         组① 附图标记字典：重新确认标记 / 重新提取标记；
         组② 批量标注：一键标注（主操作，实心强调）/ 仅标注权利要求书 / 仅标注具体实施方式；
-        组③ 清除标记：删除所有标记 / 清空标记（危险样式）。
-        （附图标记字典编辑框留在左下 2框，见 _create_mark_tab()。）"""
+        组③ 清除标记：删除所有标记（危险样式）。
+        （附图标记字典编辑框与「清空标记」按钮留在左下 2框，见 _create_mark_tab()。）"""
 
         def _caption(text: str) -> QLabel:
             lab = QLabel(text)
@@ -666,11 +679,7 @@ class MainWindow(QMainWindow):
         self.remove_marks_btn.setToolTip("基于标记字典，扫描并清洗正文中的编号（仅修改内存）")
         self.remove_marks_btn.clicked.connect(self._on_remove_marks)
         layout.addWidget(self.remove_marks_btn)
-
-        self.clear_marks_btn = _btn("🗑️ 清空标记", kind="danger")
-        self.clear_marks_btn.setToolTip("清空左下「附图标记字典」编辑框")
-        self.clear_marks_btn.clicked.connect(lambda: self.marks_edit.clear())
-        layout.addWidget(self.clear_marks_btn)
+        # 「清空标记」按钮已移至左下 2框 附图标记字典面板（见 _create_mark_tab），避免 4列 误触。
 
         layout.addStretch(1)
         return widget
