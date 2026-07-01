@@ -13,4 +13,4 @@ version.py — 唯一的版本号来源（Single Source of Truth）
     → CI 把这里改成 "3.6"，跑 build.py + iscc，产物上传 GitHub Releases + VPS
 """
 
-__version__ = "4.1.0"
+__version__ = "4.1.1"

@@ -1957,12 +1957,12 @@ class MainWindow(QMainWindow):
             pass  # Toast显示失败不影响主流程
 
     def _reposition_toasts(self):
-        """把所有活跃 toast 右对齐并自上而下堆叠"""
-        y = 30
+        """把所有活跃 toast 左对齐并自下而上堆叠（左下角，避免遮挡 3列/4列）"""
+        y = self.height() - 30
         for t in self._active_toasts:
-            x = self.width() - t.width() - 30
-            t.move(max(x, 10), y)
-            y += t.height() + 8
+            y -= t.height()
+            t.move(30, max(y, 10))
+            y -= 8
 
     def _on_toast_closed(self, toast):
         """toast 消失时从活跃列表移除并重排剩余 toast"""
@@ -1973,7 +1973,7 @@ class MainWindow(QMainWindow):
         self._reposition_toasts()
 
     def resizeEvent(self, event):
-        """窗口缩放时让活跃 toast 跟随右上角"""
+        """窗口缩放时让活跃 toast 跟随左下角"""
         super().resizeEvent(event)
         if getattr(self, "_active_toasts", None):
             self._reposition_toasts()

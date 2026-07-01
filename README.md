@@ -1,4 +1,4 @@
-# 📌 专利标记助手 V4.1.0
+# 📌 专利标记助手 V4.1.1
 
 一款为专利代理人 / 审查员打造的桌面端 `.docx` 处理工具。围绕「撰写 → 自查 → 标注 → 生成」全链路，
 把 **附图标记自动标注、文本清洗、错别字 / 重复字词检查、权利要求书引用审查、说明书检查** 集成到一个 PyQt6 界面里。
@@ -7,8 +7,10 @@
 检查问题在原文上**内联高亮**，结果与正文一屏对照。底层仍通过直接操作 `<w:t>` XML 节点实现**格式安全**：
 MathType / AxMath 公式、形状、图片、样式等对象在所有自动化操作后都完整保留，不会被破坏。
 
-![Python](https://img.shields.io/badge/Python-3.10%2B-blue) ![UI](https://img.shields.io/badge/PyQt6-GUI-green) ![docx](https://img.shields.io/badge/python--docx-XML--safe-orange) ![Release](https://img.shields.io/badge/Release-V4.1.0-brightgreen)
+![Python](https://img.shields.io/badge/Python-3.10%2B-blue) ![UI](https://img.shields.io/badge/PyQt6-GUI-green) ![docx](https://img.shields.io/badge/python--docx-XML--safe-orange) ![Release](https://img.shields.io/badge/Release-V4.1.1-brightgreen)
 
+> 🆕 **V4.1.1**：操作提醒（Toast）由右上角移到**左下角**并自下而上堆叠，不再遮挡右侧 3列 / 4列 操作区。
+>
 > 🆕 **V4.1.0**：3列 新增「📑 说明书」检查模块——**实施例编号**（实施例一/二/三 连续、不重复、不颠倒）与**摘要字数 ≤300 字**。
 
 ---
