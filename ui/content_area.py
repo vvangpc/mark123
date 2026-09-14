@@ -15,7 +15,8 @@ ui/content_area.py — 左上常驻内容区（主舞台）
   · 手动确认回写：标签栏右上角「✓ 确认修改」按钮（有未保存编辑时才启用），点击后用
     `core.paragraph_edit.set_paragraph_text` 逐段写回内存（只改 `<w:t>`、保留公式/图片
     等非文本节点）；检查 / 导出前主窗口也会调用 `flush_all()` 兜底回写；
-  · 含图片/公式的段（`doc_parser._has_image`）只读，不参与回写，被改动时给出提示；
+  · 含图片/公式的段（`doc_parser.has_readonly_object`，含 OMML）只读，不参与回写，
+    被改动时给出提示；
   · 双击定位高亮：`locate_paragraph` 按 para_idx 反查行号并整行高亮（供权项结果双击跳转）。
 
 阶段二·错别字/重复字内联高亮：`highlight_issues` 检查后把所有问题文字在对应标签页
@@ -23,9 +24,10 @@ ui/content_area.py — 左上常驻内容区（主舞台）
   dup 首次出现反推偏移）；`locate_issue` 单击「修改前」时跳转到该段并把这一条改红强调。
 
 阶段三·内联富显示：含图片/公式的标签页改用富文本构建（`_build_rich`）——按段内文档顺序
-  插入文本与图片（附图 PNG/JPEG、公式 WMF/EMF 预览经 GDI 转 QImage），**每段仍是一个 block、
-  内联对象是块内 U+FFFC 不增行**，故行=段/回写/高亮模型不变；含对象段沿用 `_has_image` 只读跳过
-  回写。无对象的标签页保持 `setPlainText` 快速可编辑路径。
+  插入文本与图片（附图 PNG/JPEG、公式 WMF/EMF 预览经 GDI 转 QImage、Word「插入→公式」的
+  OMML 由 `ui/render/omml.py` 现场排版），**每段仍是一个 block、内联对象是块内 U+FFFC 不增行**，
+  故行=段/回写/高亮模型不变；含对象段按 `has_readonly_object` 只读跳过回写。
+  无对象的标签页保持 `setPlainText` 快速可编辑路径。
 """
 from PyQt6.QtCore import Qt, QTimer, QUrl, pyqtSignal
 from PyQt6.QtGui import (
@@ -38,7 +40,7 @@ from PyQt6.QtWidgets import (
 
 from ui.render.media import has_renderable_object, iter_content, scale_to_width
 
-from core.doc_parser import _has_image
+from core.doc_parser import has_readonly_object
 from core.paragraph_edit import set_paragraph_text
 
 # 「说明书」合集所含子章节（按文档常规顺序）
@@ -50,6 +52,9 @@ class ContentArea(QWidget):
 
     TAB_NAMES = ["权利要求书", "说明书", "说明书附图", "说明书摘要"]
     HIGHLIGHT = "#ffd966"          # 双击定位行高亮色（沿用权项预览框配色）
+    # OMML 公式是现场排版成图片的，颜色烘焙在像素里 → 按主题取两套
+    MATH_COLOR_LIGHT = "#2c3e50"
+    MATH_COLOR_DARK = "#e6e6e6"
     ISSUE_YELLOW = "#ffd54f"       # 错别字/重复字：全部检查项标黄
     ISSUE_RED = "#ff5252"          # 错别字/重复字：当前点击项标红（配白色前景）
 
@@ -91,6 +96,7 @@ class ContentArea(QWidget):
         # 哪些标签页走了富文本（含对象）以便窗口缩放时按宽重排
         self._img_cache: dict = {}
         self._rich_tabs: set[int] = set()
+        self._math_color = self.MATH_COLOR_LIGHT   # 由主窗口按当前主题设置
         self._resize_timer = QTimer(self)
         self._resize_timer.setSingleShot(True)
         self._resize_timer.setInterval(200)
@@ -189,7 +195,8 @@ class ContentArea(QWidget):
         for n, idx in enumerate(pmap):
             if n > 0:
                 cursor.insertBlock()
-            for kind, payload in iter_content(paras[idx], document, self._img_cache):
+            for kind, payload in iter_content(paras[idx], document,
+                                              self._img_cache, self._math_color):
                 if kind == "text":
                     if payload:
                         cursor.insertText(payload)
@@ -296,7 +303,7 @@ class ContentArea(QWidget):
         readonly_touched = False
         for line, idx in zip(lines, pmap):
             para = paras[idx]
-            if _has_image(para):
+            if has_readonly_object(para):
                 # 含图片/公式段只读：不回写；若被改动则提示
                 # （内联对象在 QTextEdit 里是 U+FFFC 占位符，比较时先剔除，免误报）
                 if line.replace("￼", "") != para.text:
@@ -435,6 +442,19 @@ class ContentArea(QWidget):
             ed.ensureCursorVisible()
         self._apply_issue_selections(tab)
         return True
+
+    def set_math_color(self, color: str) -> None:
+        """主题切换后更新公式取色并重排含公式的标签页。
+
+        公式图片的颜色是排版时烘焙进像素的，不重排的话切到深色主题会留下
+        一批深色公式（几乎看不见）。旧配色的缓存条目一并丢弃。
+        """
+        if not color or color == self._math_color:
+            return
+        self._math_color = color
+        for k in [k for k in self._img_cache if isinstance(k, tuple)]:
+            self._img_cache.pop(k, None)
+        self._relayout_rich_tabs()
 
     def clear_issue_highlights(self) -> None:
         """清除全部内联高亮（黄+红）。"""

@@ -3,17 +3,17 @@
 claim_check.py — 权利要求书引用检查
 
 提供 6 项针对权利要求书的检查：
-  1. 引用基础（antecedent basis）           — N 字滑窗
+  1. 引用基础（antecedent basis）           — N 字滑窗（可叠加动态截断 / 动态回退）
   2. 权利要求引用关系                         — 解析"根据权利要求X所述"
-  3. 同一术语多种写法                         — N 字滑窗 + 相似度
-  4. 多值/不确定用语                          — 内置词库
-  5. 独立权利要求序号连续性                   — 正则扫编号
-  6. 单引/多引合法性                          — 解析"或"结构
+  3. 多值/不确定用语                          — 内置词库
+  4. 权项序号连续性 / 重号                     — 正则扫编号
+  5. 单引/多引合法性                          — 解析"或"结构
+  6. 每条权项以「。」结尾                      — 撰写规范
 
 所有函数均为纯函数：输入权利要求书段落列表与参数，输出 list[dict]。
 每条结果格式：
     {
-        "kind":        "antecedent" / "dependency" / "term" /
+        "kind":        "antecedent" / "dependency" /
                        "vague" / "numbering" / "multi_dep" / "ending",
         "claim_no":    int | None,
         "para_idx":    int  (全文中的段落索引),
@@ -69,6 +69,12 @@ DEFAULT_BOUNDARY_BLACKLIST = [
     "左方", "右方", "左部", "右部", "左端", "右端", "左侧", "右侧",
     "中部", "中间", "中央", "中心", "周侧", "周缘", "周向", "径向",
     "轴向", "端部", "端面", "一端", "另一", "两端", "两侧", "两者",
+    # ── 方法类权项的高频动词（"所述X + 动词"，装置权项黑名单覆盖不到）──
+    # 只收"几乎不构成部件名前缀"的词：像 采集 / 控制 / 驱动 / 计算 这类
+    # 同时能组成 采集单元 / 控制器 / 驱动电机 / 计算机 的词**故意不收**，
+    # 收了会把「所述光谱采集单元」截成「光谱」。
+    "进行", "设定", "发出", "具体", "简化", "转换", "施加",
+    "判断", "得到", "转动", "配置", "调制", "遮挡",
     # ── 连词/助词/介词类 ──
     "与其", "和其", "及其", "或者",
 ]
@@ -108,6 +114,13 @@ _SUOSHU_RE = re.compile(r'所述')
 
 # 动态截断时术语最大保留字符数，超过视为冗余描述
 DYN_TERM_MAX_LEN = 12
+
+# 动态截断的"合理术语长度"软上限。超过它仍没遇到边界，说明黑名单没覆盖住这段
+# 文字里的动词——方法类权项尤其常见（简化为 / 转换为 / 施加在 / 进行校核 …），
+# 截出的长串几乎不可能在前文原样出现，直接报"缺少引用基础"就是纯误判。
+# 仅「动态截断」单开时用它做溢出判定并回落到 n 字定值术语；
+# 「截断 + 回退」同开时由前缀回退自行消化长串，不受此上限影响。
+DYN_TRUNC_SOFT_MAX = 6
 
 
 def _norm_digits(s: str) -> str:
@@ -368,31 +381,46 @@ def check_claim_numbering(claims: dict) -> list:
 # 检查 4: 多值/不确定用语
 # ─────────────────────────────────────────
 def check_vague_terms(claims: dict, vague_words=None) -> list:
+    """扫描不确定用语。
+
+    词库里存在包含 / 交叠关系的词条（优选 ⊂ 优选地、基本 ⊂ 基本上、大约 ∩ 约为），
+    逐词独立 find 会把同一处问题重复上报 2~3 条。这里改为「长词优先 + 位置遮罩」：
+    已被某个词占用的字符区间不再被更短 / 交叠的词命中，一处问题只报一条。
+    排序次键取词面，保证结果顺序稳定（set 迭代序不可依赖）。
+    """
     results = []
-    vague_words = list(vague_words or VAGUE_WORDBANK)
+    words = sorted(
+        {w for w in (vague_words or VAGUE_WORDBANK) if w},
+        key=lambda w: (-len(w), w),
+    )
     for no in sorted(claims.keys()):
         info = claims[no]
         text = info.text
-        for w in vague_words:
-            if not w:
-                continue
+        taken = [False] * len(text)
+        hits = []
+        for w in words:
             pos = 0
             while True:
                 idx = text.find(w, pos)
                 if idx < 0:
                     break
-                start = max(0, idx - 12)
-                end = min(len(text), idx + len(w) + 12)
-                ctx = text[start:end].replace("\n", " ")
-                results.append({
-                    "kind": "vague",
-                    "claim_no": no,
-                    "para_idx": info.para_indices[0] if info.para_indices else -1,
-                    "context": ctx,
-                    "message": f"权利要求 {no} 含不确定用语『{w}』",
-                    "suggestion": "",
-                })
+                if not any(taken[idx:idx + len(w)]):
+                    for k in range(idx, idx + len(w)):
+                        taken[k] = True
+                    hits.append((idx, w))
                 pos = idx + len(w)
+        for idx, w in sorted(hits):
+            start = max(0, idx - 12)
+            end = min(len(text), idx + len(w) + 12)
+            ctx = text[start:end].replace("\n", " ")
+            results.append({
+                "kind": "vague",
+                "claim_no": no,
+                "para_idx": info.para_indices[0] if info.para_indices else -1,
+                "context": ctx,
+                "message": f"权利要求 {no} 含不确定用语『{w}』",
+                "suggestion": "",
+            })
     return results
 
 
@@ -411,8 +439,47 @@ _STOPCHARS = set(
 
 
 def _is_noisy_ngram(seg: str) -> bool:
-    """判断 ngram 是否为噪声（含停用字）"""
+    """判断定长 ngram 是否为噪声（含任一停用字即丢弃）。
+
+    只适用于「定长滑窗」术语：长度固定为 n，夹到停用字的多半确实不是术语。
+    """
     return any(ch in _STOPCHARS for ch in seg)
+
+
+# 序数前缀「第X」里 X 的取值（「第一连接件」的 min_keep 跨越判定用）
+_ORDINAL_CHARS = set("一二三四五六七八九十0123456789０１２３４５６７８９")
+
+# 动态截断的「单字右边界」：只收结构助词 / 连词 / 介词 / 指示词。
+# 刻意**不**复用 _STOPCHARS——后者含量词与数词（件 / 个 / 条 / 项 / 一 / 二 …），
+# 而「连接件 / 紧固件 / 弹性件 / 第一…」正是高频部件名，拿它做边界会把术语砍断。
+_TRUNC_BOUNDARY_CHARS = set("的地得之与和或及并且而则但若如在于对从被将把以由向其该此这那等为是有")
+
+# 术语尾部可剪掉的字：助词 + 单字方位词。同样不含量词 / 数词，
+# 所以「第一连接件」不会被剪成「第一连接」，而「壳体上」「连接杆的」能剪干净。
+_TRIM_TAIL_CHARS = set("的地得之与和或及并且而在于对从被把以由向上下中内外前后左右里间边旁侧面处")
+
+
+def _is_all_stopchars(seg: str) -> bool:
+    """整串都是停用字 → 肯定不是技术术语。
+
+    动态模式（截断 / 回退）的术语长度可变，越长越容易夹带一个停用字
+    （第一连接件 / 上盖 / 安装座上 …）。沿用 _is_noisy_ngram 的「含任一停用字
+    即丢弃」会把大量真实部件名整条跳过、造成漏报，故动态术语改用这条更宽松的
+    判据；漏报的代价由动态模式自带的自由形式定义集 + 前缀回退来对冲。
+    """
+    return bool(seg) and all(ch in _STOPCHARS for ch in seg)
+
+
+def _trim_stopchars(seg: str) -> str:
+    """去掉术语尾部的助词 / 单字方位词。
+
+    动态截断常停在双字方位词之前，尾字往往是「的 / 上 / 中」等
+    （安装座上、连接杆的），剪掉之后才是真正的部件名。
+    """
+    i = len(seg)
+    while i > 0 and seg[i - 1] in _TRIM_TAIL_CHARS:
+        i -= 1
+    return seg[:i]
 
 
 def _sliding_cjk_ngrams(text: str, n: int, skip_noise: bool = False) -> list:
@@ -452,34 +519,54 @@ def _extract_term_dynamic_truncate(text: str, start: int,
                                     blacklist_first_chars: set,
                                     blacklist_words: set,
                                     blacklist_lengths,
-                                    max_len: int = 12) -> str:
+                                    max_len: int = 12,
+                                    min_keep: int = 2) -> str:
     """
     从 text[start:] 起向后扫描 CJK 字符，直到遇到下列任一情况就停下：
       • 非 CJK 字符（标点、空格、英文、数字…）
       • 黑名单词的首字（即位置 k 起 text[k:k+L] 在黑名单里）
+      • 单字虚词（的 / 与 / 在 / 于 …，见 _TRUNC_BOUNDARY_CHARS）——黑名单收的是
+        双字动词与方位词，单字虚词从来不在其中，导致
+        「所述流量调节阀的入口与气源连通」一路吞到 max_len 才停，
+        截出的长串当然找不到引用基础；单字虚词恰恰是最可靠的术语右边界
       • 累计达到 max_len（保护用，防止整段被吞）
     blacklist_lengths 为当前黑名单实际出现的词长（降序）；按真实词长匹配，
     使用户自定义的 1 字 / 5+ 字词条也能生效，为空时只按非 CJK 边界截断。
     返回累积到的术语字符串（可能为空）。
+
+    min_keep：前 min_keep 个字**不**触发黑名单中断。黑名单里的动词多数同时是
+    高频部件名的构词前缀（安装座 / 连接杆 / 固定板 / 设置槽 …），若在起点就
+    中断会截出空串、整条被跳过而漏检。保留前 2 个字后，
+    「所述安装座上设有孔」截出「安装座上」，再配合动态回退可继续缩到
+    「安装座」→「安装」，不再漏报。
     """
     out = []
     k = start
     L = len(text)
+    # 序数前缀「第一 / 第二 / 第3 …」本身不是术语，保护长度要跨过它再起算，
+    # 否则「所述第一连接件」会在黑名单词"连接"处断成"第一"。
+    keep = min_keep
+    if start + 1 < L and text[start] == "第" and text[start + 1] in _ORDINAL_CHARS:
+        keep = min_keep + 2
     while k < L and len(out) < max_len:
         ch = text[k]
         if not _CJK_RE.match(ch):
             break
         # 检查从位置 k 起是否命中黑名单的某个词
         # 黑名单首字命中是必要条件，再做一次完整匹配以避免误伤
-        if ch in blacklist_first_chars:
-            hit = False
-            # 按黑名单实际出现的词长尝试完整匹配（长优先）
-            for L_word in blacklist_lengths:
-                if k + L_word <= L and text[k:k + L_word] in blacklist_words:
-                    hit = True
-                    break
-            if hit:
+        # （前 min_keep 个字不判，见 docstring）
+        if len(out) >= keep:
+            if ch in _TRUNC_BOUNDARY_CHARS:
                 break
+            if ch in blacklist_first_chars:
+                hit = False
+                # 按黑名单实际出现的词长尝试完整匹配（长优先）
+                for L_word in blacklist_lengths:
+                    if k + L_word <= L and text[k:k + L_word] in blacklist_words:
+                        hit = True
+                        break
+                if hit:
+                    break
         out.append(ch)
         k += 1
     return "".join(out)
@@ -510,9 +597,17 @@ def check_antecedent_basis(claims: dict, n: int, ignore_set: set,
       • 仅 use_dynamic_truncate=True：从"所述"往后扫，遇到标点 / 黑名单词
         立刻停下，把累积的 CJK 字串作为术语（自适应长度）
       • 仅 use_dynamic_fallback=True：取 n 字后，若不在已定义集中，则不断
-        把末尾砍掉一个字，重试，直到匹配到或缩到 1 字仍不匹配才报错
+        把末尾砍掉一个字，重试，直到匹配到或缩到 2 字仍不匹配才报错
       • 两个都开：先用截断得到一个"干净"的最长术语，再对该术语应用回退
         （从右向左缩短）。仅当所有前缀都没匹配时才报错——这是误判最低的组合
+
+    三条防漏报兜底（缺一就会出现"明明写了却不报"）：
+      1. "所述"后不足 n 个 CJK 字时（如 n=6 而原文是「所述壳体，」），取实际
+         可用的 ≥2 字形式参与检查，而不是整条跳过；默认模式下按该短长度
+         另建一份定义集（含被引权项的继承），避免凭空报缺失。
+      2. 动态截断退化成 <2 字时（黑名单词打头的部件名，如「所述安装座」），
+         回落到 n 字 / 短术语，而不是跳过。
+      3. 动态术语的噪声判据放宽为"整串都是停用字"，见 _is_all_stopchars。
 
     注：滑窗式定义集仍然按 n 字累积；回退/截断只影响"所述"侧的术语形态。
     """
@@ -566,17 +661,25 @@ def check_antecedent_basis(claims: dict, n: int, ignore_set: set,
     # 遍历时，按权项从小到大，继承该权项所依赖的权项的定义（继承项位置视为 -1）
     defined_pos_by_claim: dict = {}       # {claim_no: {term: first_pos}}
     defined_free_pos_by_claim: dict = {}  # 动态模式下使用
+    # 短术语（长度 2..n-1）的分档定义集：{claim_no: {L: {term: first_pos}}}
+    # 仅在"所述"后不足 n 字、需要走短术语通道时才按需构建对应长度那一档。
+    defined_short_by_claim: dict = {}
     for no in sorted(claims.keys()):
         info = claims[no]
         # 起始字典 = 所有被其引用的前序权项的 defined 集合的并，位置统一记 -1
         # -1 意味着"继承而来，早于当前权项内的任何引用位置"
         cur_defined_pos: dict = {}
         cur_defined_free_pos: dict = {}
+        cur_short: dict = {}
         for cited in info.cites:
             for t in defined_pos_by_claim.get(cited, {}):
                 cur_defined_pos.setdefault(t, -1)
             for t in defined_free_pos_by_claim.get(cited, {}):
                 cur_defined_free_pos.setdefault(t, -1)
+            for L_c, m_c in defined_short_by_claim.get(cited, {}).items():
+                tgt = cur_short.setdefault(L_c, {})
+                for t in m_c:
+                    tgt.setdefault(t, -1)
         # 遍历文本，识别"非所述的 n 字 CJK 子串"作为首次定义
         text = info.text
 
@@ -588,6 +691,13 @@ def check_antecedent_basis(claims: dict, n: int, ignore_set: set,
             dp = cur_defined_free_pos.get(term)
             if dp is not None and dp < pos:
                 return True
+            # 短术语通道：长度 != n 的术语不可能出现在 n 字滑窗定义集里，
+            # 需按其自身长度另查一档（动态模式已有自由形式集，这里主要服务默认模式）
+            L_t = len(term)
+            if 2 <= L_t < n:
+                dp = _short_map(L_t).get(term)
+                if dp is not None and dp < pos:
+                    return True
             return False
         # 过滤掉"权利要求N所述"中的"所述"（属于引用语公式，不是反向引用）
         suoshu_positions = [
@@ -637,6 +747,25 @@ def check_antecedent_basis(claims: dict, n: int, ignore_set: set,
         for i in range(text_len - 1, -1, -1):
             next_suoshu[i] = i if ngram_mask[i] else next_suoshu[i + 1]
 
+        built_short_lens = set()
+
+        def _short_map(L_sub: int) -> dict:
+            """惰性构建长度为 L_sub 的定义集（复用同一套 ngram_mask 排除引用）。
+
+            继承自被引权项的条目位置为 -1，扫描时不会被本权项内更晚的位置覆盖。
+            """
+            m = cur_short.setdefault(L_sub, {})
+            if L_sub not in built_short_lens:
+                built_short_lens.add(L_sub)
+                for seg_s, idx_s in _sliding_cjk_ngrams(text, L_sub, skip_noise=True):
+                    if seg_s in ignore_set:
+                        continue
+                    if next_suoshu[idx_s] < idx_s + L_sub:
+                        continue
+                    if seg_s not in m or idx_s < m[seg_s]:
+                        m[seg_s] = idx_s
+            return m
+
         for seg, idx in _sliding_cjk_ngrams(text, n, skip_noise=True):
             if seg in ignore_set:
                 continue
@@ -666,78 +795,84 @@ def check_antecedent_basis(claims: dict, n: int, ignore_set: set,
                 else:
                     break
             n_term = "".join(term_chars) if len(term_chars) == n else ""
+            # "所述"后的 CJK 段不足 n 字时（如 n=6 而原文是「所述壳体，」），
+            # 旧实现 n_term="" → continue，该处**完全不检查**。这里保留实际可用的
+            # ≥2 字形式作为短术语通道，配合 _defined_before 的分档定义集使用。
+            short_term = "".join(term_chars) if 2 <= len(term_chars) < n else ""
 
-            # 2) 动态截断术语（只要开了截断就要算；已在上面缓存）
-            trunc_term = trunc_term_cache.get(p, "") if use_dynamic_truncate else ""
+            # 2) 动态截断术语（只要开了截断就要算；已在上面缓存原始串）
+            #    尾部停用字（的 / 上 / 中 …）在这里剪掉，剪之后才是真正的部件名；
+            #    掩码宽度仍按未剪的原始长度算，覆盖完整的"所述X"引用短语。
+            trunc_term = (
+                _trim_stopchars(trunc_term_cache.get(p, ""))
+                if use_dynamic_truncate else ""
+            )
+
+            def _fallback_hit(base: str) -> bool:
+                """从右向左逐字缩短 base，任一前缀（含自身，最短到 2 字）命中即放过。"""
+                for L_try in range(len(base), 1, -1):
+                    sub = base[:L_try]
+                    if sub in ignore_set or _defined_before(sub, p):
+                        return True
+                return False
 
             # 决定本次"所述"的报告策略
             if not use_dynamic_truncate and not use_dynamic_fallback:
-                # 默认：n 字定值
-                if not n_term:
+                # 默认：n 字定值；不足 n 字时退到实际可用的短术语
+                base_term = n_term or short_term
+                if not base_term:
                     continue
-                if n_term in ignore_set or _is_noisy_ngram(n_term):
+                if base_term in ignore_set or _is_noisy_ngram(base_term):
                     continue
-                if _defined_before(n_term, p):
+                if _defined_before(base_term, p):
                     continue
-                missing_term = n_term
-                ctx_term_len = n
             elif use_dynamic_truncate and not use_dynamic_fallback:
-                # 仅截断：以截断结果为准
-                if not trunc_term or len(trunc_term) < 2:
+                # 仅截断：以截断结果为准，但两端都要兜底——
+                #   • 退化（<2 字）：黑名单词打头的常见部件名（所述安装座…），
+                #     旧实现整条跳过 → 漏检；
+                #   • 溢出（> DYN_TRUNC_SOFT_MAX 字）：黑名单没覆盖住的动词，
+                #     截出的长串报出来必是误判。
+                # 两种情况都回落到 n 字定值术语，交给常规滑窗判断。
+                base_term = (
+                    trunc_term
+                    if 2 <= len(trunc_term) <= DYN_TRUNC_SOFT_MAX
+                    else (n_term or short_term)
+                )
+                if not base_term or len(base_term) < 2:
                     continue
-                if trunc_term in ignore_set or _is_noisy_ngram(trunc_term):
+                if base_term in ignore_set or _is_all_stopchars(base_term):
                     continue
-                if _defined_before(trunc_term, p):
+                if _defined_before(base_term, p):
                     continue
-                missing_term = trunc_term
-                ctx_term_len = len(trunc_term)
             elif use_dynamic_fallback and not use_dynamic_truncate:
-                # 仅回退：从 n 字开始往下缩
-                if not n_term:
+                # 仅回退：从 n 字（不足则用短术语）开始往下缩
+                base_term = n_term or short_term
+                if not base_term or len(base_term) < 2:
                     continue
-                if n_term in ignore_set or _is_noisy_ngram(n_term):
+                if base_term in ignore_set or _is_all_stopchars(base_term):
                     continue
-                hit = False
-                for L_try in range(n, 1, -1):
-                    sub = n_term[:L_try]
-                    if sub in ignore_set:
-                        hit = True
-                        break
-                    if _defined_before(sub, p):
-                        hit = True
-                        break
-                if hit:
+                if _fallback_hit(base_term):
                     continue
-                missing_term = n_term
-                ctx_term_len = n
             else:
                 # 同时开启：先截断，再回退；只要任一前缀匹配就放过
                 # 这是误判最低的组合策略
                 base_term = trunc_term
-                if not base_term or len(base_term) < 2:
-                    # 截断失败时退化为 n 字
-                    base_term = n_term
+                if len(base_term) < 2:
+                    # 截断失败 / 退化时回落为 n 字或短术语
+                    base_term = n_term or short_term
                 if not base_term or len(base_term) < 2:
                     continue
-                if base_term in ignore_set or _is_noisy_ngram(base_term):
+                if base_term in ignore_set or _is_all_stopchars(base_term):
                     continue
-                hit = False
-                for L_try in range(len(base_term), 1, -1):
-                    sub = base_term[:L_try]
-                    if sub in ignore_set:
-                        hit = True
-                        break
-                    if _defined_before(sub, p):
-                        hit = True
-                        break
-                if hit:
+                if _fallback_hit(base_term):
                     continue
                 # 还要再多一道兜底：base_term 的最末字往往是边界字，
                 # 单独再用 n_term（n 字定值）兜一遍可避免漏放过同义噪声
                 if n_term and _defined_before(n_term, p):
                     continue
-                missing_term = base_term
-                ctx_term_len = len(base_term)
+
+            missing_term = base_term
+            ctx_term_len = len(base_term)
 
             start = max(0, p - 8)
             end = min(len(text), p + 2 + ctx_term_len + 8)
@@ -753,6 +888,7 @@ def check_antecedent_basis(claims: dict, n: int, ignore_set: set,
         # 写回
         defined_pos_by_claim[no] = cur_defined_pos
         defined_free_pos_by_claim[no] = cur_defined_free_pos
+        defined_short_by_claim[no] = cur_short
     return results
 
 

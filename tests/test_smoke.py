@@ -40,6 +40,7 @@ def test_main_window_construct():
     assert hasattr(win, "panel_stack"), "应有左下模块面板栈 panel_stack"
     assert win.panel_stack.count() == 8, f"预期 8 个子功能面板，实际 {win.panel_stack.count()}"
     assert hasattr(win, "nav_panel"), "应有右侧两列导航 nav_panel"
+    assert win.nav_panel.col1.count() == 8,         f"3列 应有 8 个模块（标点 / 孤立标 已独立），实际 {win.nav_panel.col1.count()}"
     # 说明书检查模块（实施例编号 / 摘要字数，共用结果表）
     for attr in ("spec_emb_btn", "spec_abs_btn", "spec_result_table"):
         assert hasattr(win, attr), f"说明书检查模块缺少 {attr}"
@@ -48,8 +49,8 @@ def test_main_window_construct():
     assert win.doc_data is None
     assert win.current_marks == {}
 
-    # 关键属性
-    for attr in ("typo_data", "dup_data", "history_entries"):
+    # 关键属性（三类检查各自的结果缓存 + 操作历史）
+    for attr in ("typo_data", "dup_data", "punct_dup_data", "history_entries"):
         assert hasattr(win, attr), f"MainWindow 缺少属性 {attr}"
 
     win.close()

@@ -21,44 +21,17 @@ from PyQt6.QtGui import (
 
 from core.doc_parser import parse_document
 from core.mark_extractor import extract_marks_from_paragraph, extract_marks_from_paragraphs, marks_to_display_text, parse_marks_from_display_text
-from core.annotator import smart_annotate_section, smart_remove_section
 from ui.styles import DARK_THEME_QSS, LIGHT_THEME_QSS
 from ui.content_area import ContentArea
 from ui.nav_panel import NavPanel
-from core.cleaner import (
-    remove_suoshu, unify_halfwidth_punct, convert_fullwidth_to_halfwidth,
-    detect_orphan_marks,
-    check_typos_wordbank, check_duplicate_words,
-    merge_typo_results, apply_typo_corrections
-)
+# worker 与 _longest_nonspace_run 曾在本文件内再写一份，与 ui/workers.py 并存且
+# 已开始漂移（测试测的还是没人用的那一份）。现在统一以 ui/workers.py 为准。
+from ui.workers import _longest_nonspace_run, AnnotateWorker, CleanWorker
 
 # 「删除所述」功能允许处理的章节白名单
 SUOSHU_ALLOWED_SECTIONS = ("权利要求书", "背景技术", "具体实施方式")
 # 默认勾选的章节
 SUOSHU_DEFAULT_CHECKED = ("具体实施方式",)
-
-
-def _longest_nonspace_run(s: str) -> str:
-    """从字符串中抽取最长的一段连续非空白字符（用作搜索锚点）。"""
-    if not s:
-        return ""
-    best = ""
-    cur_start = -1
-    for i, ch in enumerate(s):
-        if ch.isspace():
-            if cur_start >= 0:
-                seg = s[cur_start:i]
-                if len(seg) > len(best):
-                    best = seg
-                cur_start = -1
-        else:
-            if cur_start < 0:
-                cur_start = i
-    if cur_start >= 0:
-        seg = s[cur_start:]
-        if len(seg) > len(best):
-            best = seg
-    return best
 
 
 class MarqueeButton(QPushButton):
@@ -96,195 +69,6 @@ class MarqueeButton(QPushButton):
         self.initStyleOption(opt)
         opt.text = self._marquee_text
         QStylePainter(self).drawControl(QStyle.ControlElement.CE_PushButton, opt)
-
-
-class AnnotateWorker(QThread):
-    """在后台线程中执行标注/清除操作（仅修改内存，不保存文件）"""
-    finished = pyqtSignal(str, str)  # (历史摘要, 详细消息)
-    error = pyqtSignal(str)
-    progress = pyqtSignal(int)
-
-    def __init__(self, doc_data: dict, marks: dict, action: str, scope: str = "all"):
-        """
-        action: "add" 或 "remove"
-        scope: "all" / "claims" / "implementation"
-        """
-        super().__init__()
-        self.doc_data = doc_data
-        self.marks = marks
-        self.action = action
-        self.scope = scope
-
-    def run(self):
-        try:
-            sections = self.doc_data['sections']
-            paragraphs = self.doc_data['paragraphs']
-
-            claims_count = 0
-            impl_count = 0
-            self.progress.emit(20)
-
-            do_claims = self.scope in ("all", "claims")
-            do_impl = self.scope in ("all", "implementation")
-
-            if do_claims and '权利要求书' in sections:
-                section = sections['权利要求书']
-                if self.action == "add":
-                    claims_count = smart_annotate_section(paragraphs, section, self.marks, mode="claims")
-                else:
-                    claims_count = smart_remove_section(paragraphs, section, self.marks, mode="claims")
-
-            self.progress.emit(60)
-
-            if do_impl and '具体实施方式' in sections:
-                section = sections['具体实施方式']
-                if self.action == "add":
-                    impl_count = smart_annotate_section(paragraphs, section, self.marks, mode="implementation")
-                else:
-                    impl_count = smart_remove_section(paragraphs, section, self.marks, mode="implementation")
-
-            self.progress.emit(100)
-
-            summary, detail = self._build_messages(claims_count, impl_count)
-            self.finished.emit(summary, detail)
-
-        except Exception as e:
-            self.error.emit(f"操作失败：{str(e)}\n{traceback.format_exc()}")
-
-    def _build_messages(self, claims_count, impl_count):
-        action_name = "标注" if self.action == "add" else "删除标记"
-        parts = []
-
-        if self.scope in ("all", "claims"):
-            if claims_count == -1:
-                parts.append("权利要求书：已有标注，跳过")
-            elif claims_count == 0:
-                parts.append(f"权利要求书：未找到需{action_name}的内容")
-            else:
-                parts.append(f"权利要求书：成功{action_name} {claims_count} 段")
-
-        if self.scope in ("all", "implementation"):
-            if impl_count == -1:
-                parts.append("具体实施方式：已有标注，跳过")
-            elif impl_count == 0:
-                parts.append(f"具体实施方式：未找到需{action_name}的内容")
-            else:
-                parts.append(f"具体实施方式：成功{action_name} {impl_count} 段")
-
-        scope_name = {"all": "全文", "claims": "权利要求书", "implementation": "具体实施方式"}[self.scope]
-        summary = f"{action_name}（{scope_name}）"
-        return summary, "\n".join(parts)
-
-
-class CleanWorker(QThread):
-    """在后台线程中执行清洗/检查操作"""
-    finished = pyqtSignal(str)
-    error = pyqtSignal(str)
-    progress = pyqtSignal(int)
-    typo_results = pyqtSignal(list)  # 仅 typo_check 动作使用
-
-    def __init__(self, doc_data: dict, action: str, **kwargs):
-        super().__init__()
-        self.doc_data = doc_data
-        self.action = action
-        self.kwargs = kwargs  # 额外参数按 action 传入
-
-    def run(self):
-        try:
-            paragraphs = self.doc_data['paragraphs']
-            sections = self.doc_data['sections']
-
-            self.progress.emit(10)
-
-            if self.action == "suoshu":
-                selected = self.kwargs.get("selected_sections", [])
-                count = remove_suoshu(paragraphs, sections, selected)
-                self.progress.emit(100)
-                self.finished.emit(f"删除「所述」完成，共处理 {count} 个段落")
-
-            elif self.action == "punct":
-                do_half = self.kwargs.get("do_halfwidth", True)
-                do_full = self.kwargs.get("do_fullwidth", False)
-                do_consec = self.kwargs.get("do_consecutive", True)
-                half_n = full_n = consec_n = 0
-
-                # 顺序：1) 半角→全角  2) 全角→半角(可选)  3) 修正连续重复
-                # 把 1/2 放在 3 之前可避免出现 ".。" 这种混合连续无法被修正
-                if do_half:
-                    half_n = unify_halfwidth_punct(paragraphs, sections)
-                self.progress.emit(40)
-                if do_full:
-                    full_n = convert_fullwidth_to_halfwidth(paragraphs, sections)
-                self.progress.emit(70)
-                if do_consec:
-                    from core.cleaner import fix_consecutive_punct
-                    consec_n = fix_consecutive_punct(paragraphs, sections=sections)
-                self.progress.emit(100)
-
-                parts = []
-                if do_half:
-                    parts.append(f"半角→全角 {half_n} 段")
-                if do_full:
-                    parts.append(f"全角→半角 {full_n} 段")
-                if do_consec:
-                    parts.append(f"修正连续标点 {consec_n} 段")
-                self.finished.emit("标点检查完成：" + "，".join(parts))
-
-            elif self.action == "orphan":
-                marks = self.kwargs.get("marks", {})
-                orphans = detect_orphan_marks(paragraphs, sections, marks)
-                self.progress.emit(60)
-                from core.cleaner import detect_orphan_figures
-                missing_figs = detect_orphan_figures(paragraphs, sections)
-                self.progress.emit(100)
-
-                parts = []
-                if orphans:
-                    lines = [f"  {num} — {name}" for num, name in orphans]
-                    parts.append(
-                        "⚠️ 孤立附图标记（附图说明有、具体实施方式无）：\n"
-                        + "\n".join(lines)
-                    )
-                else:
-                    parts.append("✅ 附图标记：所有标记均在具体实施方式中出现")
-
-                if missing_figs:
-                    fig_lines = "、".join(f"图{n}" for n in missing_figs)
-                    parts.append(
-                        f"⚠️ 未引用图编号（附图说明提及但具体实施方式未出现）：{fig_lines}"
-                    )
-                else:
-                    parts.append("✅ 图编号：附图说明中的图编号均在具体实施方式中出现")
-
-                msg = "\n".join(parts)
-                self.finished.emit(msg)
-
-            elif self.action == "typo_check":
-                wb_results = check_typos_wordbank(paragraphs, sections)
-                self.progress.emit(80)
-                merged = merge_typo_results(wb_results)
-                self.progress.emit(100)
-                self.typo_results.emit(merged)
-                count = len(merged)
-                self.finished.emit(f"错别字检查完成，发现 {count} 处疑似问题")
-
-            elif self.action == "dup_check":
-                ignore_list = self.kwargs.get("ignore_list", [])
-                dup_results = check_duplicate_words(paragraphs, sections, ignore_list=ignore_list)
-                self.progress.emit(100)
-                self.typo_results.emit(dup_results)
-                count = len(dup_results)
-                self.finished.emit(f"重复字词检查完成，发现 {count} 处疑似问题")
-
-            elif self.action == "typo_apply":
-                corrections = self.kwargs.get("corrections", [])
-                count = apply_typo_corrections(paragraphs, corrections)
-                self.progress.emit(100)
-                self.finished.emit(f"已应用 {count} 处修正")
-
-        except Exception as e:
-            import traceback as tb
-            self.error.emit(f"操作失败：{str(e)}\n{tb.format_exc()}")
 
 
 class ToastWidget(QLabel):
@@ -356,6 +140,15 @@ class _ClickableLabel(QLabel):
 class MainWindow(QMainWindow):
     """主窗口"""
 
+    # 三类「先看后改」的检查共用 2框 结果表与 1框 内联高亮：
+    #   kind → (缓存属性名, 2框 组标题, 操作历史前缀)
+    # 新增同类检查时只需在此登记 + 加一个 4列 按钮 + 一个 CleanWorker action。
+    CHECK_KINDS = {
+        "typo":      ("typo_data",      "📝 错别字检查结果",   "错别字修正"),
+        "dup":       ("dup_data",       "🔁 重复字词检查结果", "重复字词修正"),
+        "punct_dup": ("punct_dup_data", "🔣 重复标点检查结果", "重复标点修正"),
+    }
+
     def __init__(self):
         super().__init__()
         self.doc_data = None         # 解析后的文档数据
@@ -367,6 +160,7 @@ class MainWindow(QMainWindow):
         self.suoshu_checkboxes = {}  # {section_name: QCheckBox}
         self.typo_data = []          # 当前错别字检查结果
         self.dup_data = []           # 当前重复字词检查结果
+        self.punct_dup_data = []     # 当前重复标点检查结果
         self.history_entries = []    # 内存中累计的操作历史
         self._active_toasts = []     # 当前显示中的 toast（用于堆叠与 resize 重排）
         # 权利要求书检查 Tab 的状态
@@ -400,6 +194,9 @@ class MainWindow(QMainWindow):
 
         self._init_ui()
 
+        # 公式取色跟随已读取的主题（必须在 load 文档之前定好）
+        self._sync_math_color()
+
         # 应用持久化的窗口几何
         geom = self.settings.get_geometry()
         if geom is not None:
@@ -417,31 +214,23 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
 
-        # 应用持久化的复选框勾选状态
-        try:
-            self.punct_halfwidth_cb.setChecked(
-                self.settings.get_bool("clean/punct_halfwidth", True)
-            )
-            self.punct_fullwidth_cb.setChecked(
-                self.settings.get_bool("clean/punct_fullwidth", False)
-            )
-            self.fix_punctuation_cb.setChecked(
-                self.settings.get_bool("clean/fix_consecutive_punct", True)
-            )
-            self.open_dir_cb.setChecked(
-                self.settings.get_bool("gen/open_dir", False)
-            )
-            self.claim_dyn_trunc_cb.setChecked(
-                self.settings.get_bool("claim/dyn_truncate", False)
-            )
-            self.claim_dyn_fb_cb.setChecked(
-                self.settings.get_bool("claim/dyn_fallback", False)
-            )
-            self.claim_vague_cb.setChecked(
-                self.settings.get_bool("claim/check_vague", True)
-            )
-        except Exception:
-            pass
+        # 应用持久化的复选框勾选状态。
+        # 逐项 try —— 从前是一个大 try 包住 7 个赋值，任何一项出错都会让后面
+        # 全部静默跳过（用户会看到"设置没保存"，且没有任何线索）。
+        for _attr, _key, _default in (
+            ("punct_halfwidth_cb",  "clean/punct_halfwidth",       True),
+            ("punct_fullwidth_cb",  "clean/punct_fullwidth",       False),
+            ("open_dir_cb",         "gen/open_dir",                False),
+            ("claim_dyn_trunc_cb",  "claim/dyn_truncate",          False),
+            ("claim_dyn_fb_cb",     "claim/dyn_fallback",          False),
+            ("claim_vague_cb",      "claim/check_vague",           True),
+        ):
+            try:
+                getattr(self, _attr).setChecked(
+                    self.settings.get_bool(_key, _default)
+                )
+            except Exception:
+                pass
 
     def _init_ui(self):
         """初始化界面布局"""
@@ -477,8 +266,8 @@ class MainWindow(QMainWindow):
         self.panel_stack = QStackedWidget()
         self.panel_stack.addWidget(self._create_mark_tab())                      # 0 标记：附图标记标注
         self.panel_stack.addWidget(self._wrap_card(self._build_suoshu_card()))   # 1 清洗：删除“所述”
-        self.panel_stack.addWidget(self._wrap_card(self._build_punct_card()))    # 2 清洗：标点检查
-        self.panel_stack.addWidget(self._wrap_card(self._build_orphan_card()))   # 3 清洗：孤立标记检测
+        self.panel_stack.addWidget(self._wrap_card(self._build_punct_card()))    # 2 标点：处理选项
+        self.panel_stack.addWidget(self._wrap_card(self._build_orphan_card()))   # 3 孤立标：检测结果
         self.panel_stack.addWidget(self._create_typo_tab())                      # 4 错别字 / 重复字
         self.panel_stack.addWidget(self._create_claim_check_tab())               # 5 权利要求书检查
         self.panel_stack.addWidget(self._create_replace_page())                  # 6 清洗：全文替换（输入框）
@@ -507,7 +296,9 @@ class MainWindow(QMainWindow):
         self.mark_actions_panel = self._create_mark_actions()
         self.nav_panel = NavPanel([
             ("📌 标记", self.mark_actions_panel, 0),
-            ("🧹 清洗", self._build_clean_nav(), 1),   # 控件型：4列放 清洗各功能 + 确认替换
+            ("🧹 清洗", self._build_clean_nav(), 1),   # 控件型：4列放 删除所述 + 全文替换
+            ("🔣 标点", self._build_punct_nav(), 2),   # 控件型：标点统一 + 重复标点（共用 2框 结果表）
+            ("🔍 孤立标", self._build_orphan_nav(), 3),  # 控件型：检测按钮在 4列，结果在 2框
             ("📝 错别字", self._build_typo_nav(), 4),  # 控件型：错别字检查 + 错别字词库
             ("🔁 重复字", self._build_dup_nav(), 4),   # 控件型：重复字检查 + 忽略词库（共用 2框 结果表）
             ("⚖️ 权项", self._build_claim_nav(), 5),  # 控件型：检查参数 + 开始检查在 4列
@@ -574,7 +365,8 @@ class MainWindow(QMainWindow):
         self.status_bar.addPermanentWidget(self.progress_bar)
 
     def _create_mark_tab(self) -> QWidget:
-        """左下（2框）「标记」面板：附图标记字典编辑框 + 贴身的「清空标记」按钮。
+        """左下（2框）「标记」面板：附图标记字典编辑框 + 贴身的
+        「✅ 修改标记字典」「🗑️ 清空标记字典」两颗按钮。
         其余标记操作按钮在右侧第二列（4列），见 _create_mark_actions()。"""
         widget = QWidget()
         layout = QVBoxLayout(widget)
@@ -582,6 +374,7 @@ class MainWindow(QMainWindow):
         layout.setSpacing(8)
 
         marks_group = QGroupBox("📌 附图标记字典（自动提取，可手动编辑）")
+        marks_group.setToolTip("改完点下方「✅ 修改标记字典」才会写回内存")
         marks_layout = QVBoxLayout(marks_group)
 
         self.marks_edit = QPlainTextEdit()
@@ -591,19 +384,32 @@ class MainWindow(QMainWindow):
         )
         marks_layout.addWidget(self.marks_edit, 1)
 
-        # 底部一行：左侧标记计数，右侧「清空标记」按钮
-        # （清空的就是本编辑框，故按钮贴身放在 2框，避免混在 4列 里误触）
+        # 底部一行：左侧标记计数，右侧两颗按钮 ——
+        # 「修改标记字典」写回、「清空标记字典」清空，作用对象都是本编辑框，
+        # 贴身放在 2框 比混在 4列 的批量标注里更直观、也不易误触。
         footer = QHBoxLayout()
+        footer.setSpacing(6)
         self.mark_count_label = QLabel("")
         self.mark_count_label.setObjectName("subtitleLabel")
         footer.addWidget(self.mark_count_label)
         footer.addStretch(1)
 
-        self.clear_marks_btn = QPushButton("🗑️ 清空标记")
+        self.confirm_marks_btn = QPushButton("✅ 修改标记字典")
+        self.confirm_marks_btn.setObjectName("navActionBtn")
+        self.confirm_marks_btn.setProperty("kind", "primary")
+        self.confirm_marks_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.confirm_marks_btn.setEnabled(False)
+        self.confirm_marks_btn.setToolTip(
+            "把本编辑框的内容写回内存中的附图标记段落，并记入操作历史"
+        )
+        self.confirm_marks_btn.clicked.connect(self._on_confirm_marks)
+        footer.addWidget(self.confirm_marks_btn)
+
+        self.clear_marks_btn = QPushButton("🗑️ 清空标记字典")
         self.clear_marks_btn.setObjectName("navActionBtn")
         self.clear_marks_btn.setProperty("kind", "danger")
         self.clear_marks_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.clear_marks_btn.setToolTip("清空「附图标记字典」编辑框")
+        self.clear_marks_btn.setToolTip("清空「附图标记字典」编辑框（不影响内存中的文档）")
         self.clear_marks_btn.clicked.connect(lambda: self.marks_edit.clear())
         footer.addWidget(self.clear_marks_btn)
         marks_layout.addLayout(footer)
@@ -613,10 +419,10 @@ class MainWindow(QMainWindow):
 
     def _create_mark_actions(self) -> QWidget:
         """右侧第二列（4列）的「标记」操作按钮组：竖排、风格统一、分三组。
-        组① 附图标记字典：重新确认标记 / 重新提取标记；
+        组① 附图标记字典：重新提取标记（「修改 / 清空标记字典」贴着编辑框放在 2框）；
         组② 批量标注：一键标注（主操作，实心强调）/ 仅标注权利要求书 / 仅标注具体实施方式；
         组③ 清除标记：删除所有标记（危险样式）。
-        （附图标记字典编辑框与「清空标记」按钮留在左下 2框，见 _create_mark_tab()。）"""
+        （附图标记字典编辑框与「修改 / 清空标记字典」按钮留在左下 2框，见 _create_mark_tab()。）"""
 
         def _caption(text: str) -> QLabel:
             lab = QLabel(text)
@@ -638,13 +444,9 @@ class MainWindow(QMainWindow):
         layout.setSpacing(5)
 
         # —— 组① 附图标记字典 ——
+        # 「修改标记字典」「清空标记字典」都贴着编辑框放在 2框（见 _create_mark_tab），
+        # 这里只留「从原文重抽」这个不针对编辑框当前内容的操作。
         layout.addWidget(_caption("附图标记字典"))
-
-        self.confirm_marks_btn = _btn("✅ 重新确认标记")
-        self.confirm_marks_btn.setEnabled(False)
-        self.confirm_marks_btn.setToolTip("将左下字典编辑框的内容写回内存中的附图标记段落，并记入操作历史")
-        self.confirm_marks_btn.clicked.connect(self._on_confirm_marks)
-        layout.addWidget(self.confirm_marks_btn)
 
         self.refresh_marks_btn = _btn("🔄 重新提取标记")
         self.refresh_marks_btn.setEnabled(False)
@@ -715,15 +517,8 @@ class MainWindow(QMainWindow):
         self._suoshu_placeholder.setObjectName("subtitleLabel")
         self.suoshu_cb_layout.addWidget(self._suoshu_placeholder)
         v.addWidget(cb_box)
-
         v.addStretch()
-
-        self.suoshu_btn = QPushButton('▶  执行删除"所述"')
-        self.suoshu_btn.setObjectName("accentBtn")
-        self.suoshu_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.suoshu_btn.setEnabled(False)
-        self.suoshu_btn.clicked.connect(self._on_clean_suoshu)
-        v.addWidget(self.suoshu_btn)
+        # 「🗑️ 执行删除」按钮在右侧 4列（见 _build_clean_nav），本页只留章节勾选
         return group
 
     def _build_punct_card(self) -> QGroupBox:
@@ -736,7 +531,8 @@ class MainWindow(QMainWindow):
         hint = QLabel(
             "将中文正文中的半角标点（, ; : ? ! . ( ) ' \"）替换为对应的全角，"
             "仅在紧邻中文字符时替换，不影响英文/数字；不处理 < > 以免误伤数学符号。\n"
-            "执行顺序：半角→全角 → 全角→半角 → 修正连续重复标点。"
+            "执行顺序：半角→全角 → 全角→半角。\n"
+            "连续重复标点（。。 / ，, / ，、）请用 4列 的「🔁 重复标点检查」逐条确认后再改。"
         )
         hint.setObjectName("subtitleLabel")
         hint.setWordWrap(True)
@@ -760,20 +556,12 @@ class MainWindow(QMainWindow):
         )
         opt_layout.addWidget(self.punct_fullwidth_cb)
 
-        self.fix_punctuation_cb = QCheckBox("修正连续重复标点")
-        self.fix_punctuation_cb.setChecked(True)
-        self.fix_punctuation_cb.setToolTip("会在前两步之后再执行，避免出现 `.。` 这类混合连续标点遗漏")
-        opt_layout.addWidget(self.fix_punctuation_cb)
+        # 「修正连续重复标点」勾选项已移除 —— 同一件事由「🔁 重复标点检查」承担，
+        # 后者会先把每一处列进 2框 结果表让用户逐条确认，比闷头替换安全。
 
         v.addWidget(opt_box)
         v.addStretch()
-
-        self.punct_btn = QPushButton("▶  执行标点检查")
-        self.punct_btn.setObjectName("accentBtn")
-        self.punct_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.punct_btn.setEnabled(False)
-        self.punct_btn.clicked.connect(self._on_clean_punct)
-        v.addWidget(self.punct_btn)
+        # 「执行标点检查」按钮在右侧 4列（见 _build_punct_nav），本页只留勾选项
         return group
 
     def _build_orphan_card(self) -> QGroupBox:
@@ -792,13 +580,7 @@ class MainWindow(QMainWindow):
         hint.setObjectName("subtitleLabel")
         hint.setWordWrap(True)
         v.addWidget(hint)
-
-        self.orphan_btn = QPushButton("🔍  检测孤立标记")
-        self.orphan_btn.setObjectName("accentBtn")
-        self.orphan_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.orphan_btn.setEnabled(False)
-        self.orphan_btn.clicked.connect(self._on_detect_orphans)
-        v.addWidget(self.orphan_btn)
+        # 「检测孤立标记」按钮在右侧 4列（见 _build_orphan_nav），本页只留结果框
 
         # 该卡片专属的小型结果显示框
         self.orphan_result_text = QTextEdit()
@@ -809,23 +591,20 @@ class MainWindow(QMainWindow):
         return group
 
     def _build_clean_nav(self) -> QWidget:
-        """清洗模块 4列：删除所述 / 标点 / 孤立 / 全文替换（导航）+ 确认替换（执行）。"""
+        """清洗模块 4列：删除所述 / 全文替换（导航）+ 确认替换（执行）。"""
         w = QWidget()
         w.setObjectName("markActions")
         v = QVBoxLayout(w)
         v.setContentsMargins(0, 0, 0, 0)
         v.setSpacing(5)
 
-        v.addWidget(self._nav_caption("清洗功能"))
-        b1 = self._nav_btn("🗑️ 删除“所述”")
-        b1.clicked.connect(lambda: self.panel_stack.setCurrentIndex(1))
-        v.addWidget(b1)
-        b2 = self._nav_btn("🔣 标点检查")
-        b2.clicked.connect(lambda: self.panel_stack.setCurrentIndex(2))
-        v.addWidget(b2)
-        b3 = self._nav_btn("🔍 孤立标记检测")
-        b3.clicked.connect(lambda: self.panel_stack.setCurrentIndex(3))
-        v.addWidget(b3)
+        v.addWidget(self._nav_caption('删除“所述”'))
+        self.suoshu_btn = self._nav_btn("🗑️ 执行删除", kind="primary")
+        self.suoshu_btn.setEnabled(False)
+        self.suoshu_btn.setToolTip('删除 2框 所勾选章节中的“所述”（删除范围仍在 2框 勾选）')
+        self.suoshu_btn.clicked.connect(self._on_clean_suoshu)
+        v.addWidget(self.suoshu_btn)
+        # 「标点检查」「孤立标记检测」已升为 3列 独立模块（🔣 标点 / 🔍 孤立标）
 
         v.addWidget(self._nav_caption("全文替换"))
         b4 = self._nav_btn("🔁 全文替换")
@@ -840,8 +619,79 @@ class MainWindow(QMainWindow):
         v.addStretch(1)
         return w
 
+    def _build_punct_nav(self) -> QWidget:
+        """标点模块 4列：标点统一（选项页 + 执行）+ 重复标点（检查 + 应用）。
+
+        「标点统一」直接改内存、不可逐条确认；「重复标点」走 2框 共用结果表，
+        与错别字 / 重复字词一样先看后改（逐条「修改 / 忽略」或一次性应用）。
+        """
+        w = QWidget()
+        w.setObjectName("markActions")
+        v = QVBoxLayout(w)
+        v.setContentsMargins(0, 0, 0, 0)
+        v.setSpacing(5)
+
+        v.addWidget(self._nav_caption("标点统一"))
+        self.punct_btn = self._nav_btn("▶ 执行标点检查", kind="primary")
+        self.punct_btn.setEnabled(False)
+        self.punct_btn.setToolTip(
+            "按 2框 勾选的方式批量处理全文标点（直接写入内存）；"
+            "点它会同时把 2框 切回勾选项页"
+        )
+        self.punct_btn.clicked.connect(self._on_clean_punct)
+        v.addWidget(self.punct_btn)
+
+        v.addWidget(self._nav_caption("重复标点"))
+        self.punct_dup_btn = self._nav_btn("🔁 重复标点检查")
+        self.punct_dup_btn.setEnabled(False)
+        self.punct_dup_btn.setToolTip(
+            "先在 2框 列出全文重复标点（。。 / ，, / ，、），逐条确认后再改"
+        )
+        self.punct_dup_btn.clicked.connect(self._on_punct_dup_check)
+        v.addWidget(self.punct_dup_btn)
+
+        self.punct_dup_apply_btn = self._nav_btn("✅ 应用所有修改")
+        self.punct_dup_apply_btn.setEnabled(False)
+        self.punct_dup_apply_btn.setToolTip("把 2框「修改后」列的内容写回内存")
+        self.punct_dup_apply_btn.clicked.connect(self._on_apply_corrections)
+        v.addWidget(self.punct_dup_apply_btn)
+
+        v.addStretch(1)
+        return w
+
+    def _build_orphan_nav(self) -> QWidget:
+        """孤立标模块 4列：检测按钮 + 清空结果（结果框在 2框）。"""
+        w = QWidget()
+        w.setObjectName("markActions")
+        v = QVBoxLayout(w)
+        v.setContentsMargins(0, 0, 0, 0)
+        v.setSpacing(5)
+
+        v.addWidget(self._nav_caption("检测"))
+        self.orphan_btn = self._nav_btn("🔍 检测孤立标记", kind="primary")
+        self.orphan_btn.setEnabled(False)
+        self.orphan_btn.setToolTip(
+            "找出附图说明提及、但具体实施方式未出现的标记名与图编号（只检测，不改文档）"
+        )
+        self.orphan_btn.clicked.connect(self._on_detect_orphans)
+        v.addWidget(self.orphan_btn)
+
+        # 结果框是追加式的，多次检测会累积 → 给一个就近的清空入口
+        self.orphan_clear_btn = self._nav_btn("🗑️ 清空结果")
+        self.orphan_clear_btn.setToolTip("清空 2框 的检测结果框")
+        self.orphan_clear_btn.clicked.connect(lambda: self.orphan_result_text.clear())
+        v.addWidget(self.orphan_clear_btn)
+
+        v.addStretch(1)
+        return w
+
     def _create_replace_page(self) -> QWidget:
-        """2框「全文替换」页：替换前 / 替换后 输入框（执行按钮「确认替换」在 4列）。"""
+        """2框「全文替换」页：替换前 / 替换后 输入框（执行按钮「确认替换」在 4列）。
+
+        两行用 QGridLayout 对齐标签与输入框（此前是两个独立 QHBoxLayout，
+        标签宽度不一致、输入框左边缘对不齐），并在下方给一行实时预览 ——
+        与「文件生成」对话框的文件名预览是同一套观感。
+        """
         w = QWidget()
         layout = QVBoxLayout(w)
         layout.setContentsMargins(0, 8, 0, 0)
@@ -849,31 +699,79 @@ class MainWindow(QMainWindow):
 
         group = QGroupBox("🔁 全文替换")
         g = QVBoxLayout(group)
+        g.setSpacing(10)
         hint = QLabel(
             "对全文做文本替换（格式安全，保留公式 / 图片）。填好「替换前 / 替换后」，"
-            "再点右侧 4列的「✅ 确认替换」。例：把全文「发明」替换为「实用新型」。"
+            "再点右侧 4列 的「✅ 确认替换」。"
         )
         hint.setObjectName("subtitleLabel")
         hint.setWordWrap(True)
         g.addWidget(hint)
 
-        row1 = QHBoxLayout()
-        row1.addWidget(QLabel("替换前："))
-        self.replace_from_edit = QLineEdit()
-        self.replace_from_edit.setPlaceholderText("要被替换的文本，如：发明")
-        row1.addWidget(self.replace_from_edit, 1)
-        g.addLayout(row1)
+        grid = QGridLayout()
+        grid.setHorizontalSpacing(10)
+        grid.setVerticalSpacing(8)
+        grid.setColumnStretch(1, 1)
 
-        row2 = QHBoxLayout()
-        row2.addWidget(QLabel("替换后："))
+        from_label = QLabel("替换前")
+        from_label.setObjectName("markCaption")
+        from_label.setAlignment(
+            Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+        )
+        grid.addWidget(from_label, 0, 0)
+        self.replace_from_edit = QLineEdit()
+        self.replace_from_edit.setObjectName("replaceEdit")
+        self.replace_from_edit.setClearButtonEnabled(True)
+        self.replace_from_edit.setPlaceholderText("要被替换的文本，如：发明")
+        grid.addWidget(self.replace_from_edit, 0, 1)
+
+        arrow = QLabel("↓")
+        arrow.setObjectName("markCaption")
+        arrow.setAlignment(
+            Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+        )
+        grid.addWidget(arrow, 1, 0)
+
+        to_label = QLabel("替换后")
+        to_label.setObjectName("markCaption")
+        to_label.setAlignment(
+            Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+        )
+        grid.addWidget(to_label, 2, 0)
         self.replace_to_edit = QLineEdit()
-        self.replace_to_edit.setPlaceholderText("替换成的文本，如：实用新型（留空＝删除）")
-        row2.addWidget(self.replace_to_edit, 1)
-        g.addLayout(row2)
+        self.replace_to_edit.setObjectName("replaceEdit")
+        self.replace_to_edit.setClearButtonEnabled(True)
+        self.replace_to_edit.setPlaceholderText("替换成的文本，留空＝删除「替换前」")
+        grid.addWidget(self.replace_to_edit, 2, 1)
+        g.addLayout(grid)
+
+        self.replace_preview_label = QLabel()
+        self.replace_preview_label.setObjectName("subtitleLabel")
+        self.replace_preview_label.setWordWrap(True)
+        g.addWidget(self.replace_preview_label)
+        self.replace_from_edit.textChanged.connect(self._update_replace_preview)
+        self.replace_to_edit.textChanged.connect(self._update_replace_preview)
+        self._update_replace_preview()
 
         layout.addWidget(group)
         layout.addStretch(1)
         return w
+
+    def _update_replace_preview(self):
+        """实时预览这次替换会做什么（留空 / 未填都给出明确说明）。"""
+        src = self.replace_from_edit.text()
+        dst = self.replace_to_edit.text()
+        if not src:
+            self.replace_preview_label.setText(
+                "预览：填写「替换前」后显示，例如 把全文的「发明」替换为「实用新型」"
+            )
+            return
+        if dst:
+            self.replace_preview_label.setText(
+                f"预览：把全文的「{src}」替换为「{dst}」"
+            )
+        else:
+            self.replace_preview_label.setText(f"预览：把全文的「{src}」删除")
 
     def _on_clean_replace(self):
         """执行全文替换：把「替换前」文本在所有段落中替换为「替换后」（格式安全）。"""
@@ -897,8 +795,7 @@ class MainWindow(QMainWindow):
             except Exception:
                 pass
         self.content_area.load(self.doc_data)   # 刷新 1框 显示
-        self._invalidate_typo_cache()
-        self._invalidate_dup_cache()
+        self._invalidate_check_cache()
         self._log_clean(f"🔁 全文替换：「{src}」→「{dst}」，{n} 段发生替换")
         if n:
             self._add_history(f"全文替换「{src}」→「{dst}」", f"共 {n} 段")
@@ -925,8 +822,10 @@ class MainWindow(QMainWindow):
         return lab
 
     def _set_apply_enabled(self, flag: bool):
-        """同时启停 错别字 / 重复字 两个模块 4列 的「应用所有修改」按钮。"""
-        for b in (getattr(self, "typo_apply_btn", None), getattr(self, "dup_apply_btn", None)):
+        """同时启停 错别字 / 重复字 / 重复标点 三个模块 4列 的「应用所有修改」按钮
+        （三者共用 2框 同一张结果表，启停状态必须一致）。"""
+        for name in ("typo_apply_btn", "dup_apply_btn", "punct_dup_apply_btn"):
+            b = getattr(self, name, None)
             if b is not None:
                 b.setEnabled(flag)
 
@@ -1209,7 +1108,7 @@ class MainWindow(QMainWindow):
         self._refresh_wordbank_label()
         # 失效错别字检查的缓存 —— 下次点「错别字检查」时强制重新扫描，
         # 确保词库修改立即生效，而不是显示旧的陈旧结果
-        self._invalidate_typo_cache()
+        self._invalidate_check_cache("typo")
 
     def _refresh_dup_ignore_label(self):
         """刷新 4列「重复字忽略词库」按钮文字（含条目数）"""
@@ -1234,13 +1133,12 @@ class MainWindow(QMainWindow):
         self._refresh_dup_ignore_label()
         # 失效重复字词检查的缓存 —— 下次点「重复字词检查」时强制重新扫描，
         # 确保新添加的忽略词立即生效
-        self._invalidate_dup_cache()
+        self._invalidate_check_cache("dup")
 
     def _on_content_edited(self):
-        """1框 专利内容被结构化编辑回写到内存后：失效错别字/重复字检查缓存，
+        """1框 专利内容被结构化编辑回写到内存后：失效全部结果表类检查的缓存，
         下次检查时按编辑后的最新内存重新扫描（权项检查每次都读内存，无需额外处理）。"""
-        self._invalidate_typo_cache()
-        self._invalidate_dup_cache()
+        self._invalidate_check_cache()
 
     def _on_content_confirmed(self, count: int):
         """点击 1框「✓ 确认修改」后的反馈提示。"""
@@ -1249,16 +1147,16 @@ class MainWindow(QMainWindow):
         else:
             self._show_toast("没有需要写入的文本改动", "info")
 
-    def _invalidate_typo_cache(self):
-        """清空错别字检查缓存，若当前显示的就是错别字则清空表格"""
-        self.typo_data = []
-        if getattr(self, "_current_check_kind", None) == "typo":
-            self._render_table_from_data([])
+    def _invalidate_check_cache(self, *kinds):
+        """清空指定检查的结果缓存（不传则全部三类）。
 
-    def _invalidate_dup_cache(self):
-        """清空重复字词检查缓存，若当前显示的就是重复字词则清空表格"""
-        self.dup_data = []
-        if getattr(self, "_current_check_kind", None) == "dup":
+        若 2框 当前显示的正是其中一类，同时清空表格与 1框 高亮 —— 否则用户会
+        对着一份已经失效的旧结果点「修改」，而那些 para_idx 指向的内容早已变了。
+        """
+        targets = kinds or tuple(self.CHECK_KINDS)
+        for kind in targets:
+            setattr(self, self.CHECK_KINDS[kind][0], [])
+        if getattr(self, "_current_check_kind", None) in targets:
             self._render_table_from_data([])
 
     # ===== 事件处理 =====
@@ -1312,9 +1210,12 @@ class MainWindow(QMainWindow):
         # 28 ≈ 左右内边距(12*2) + 虚线边框等余量
         name_avail = self.file_btn.width() - 28 - fm.horizontalAdvance(prefix)
         if name_avail <= 0 or fm.horizontalAdvance(full) <= name_avail:
-            # 不溢出：恢复普通绘制（显示 setText 的完整文本）
+            # 不溢出：恢复普通绘制（显示 setText 的完整文本）并停表 ——
+            # 否则这个 120ms 定时器会一直空转。窗口变窄重新溢出时，
+            # resizeEvent 会把它重新启动。
             self.file_btn.set_marquee_text(None)
             self._file_marquee_pos = 0
+            self._file_marquee_timer.stop()
             return
         loop = full + "      "          # 循环间隔
         s = loop + loop
@@ -1392,6 +1293,7 @@ class MainWindow(QMainWindow):
             self.confirm_marks_btn.setEnabled(True)
             self.suoshu_btn.setEnabled(True)
             self.punct_btn.setEnabled(True)
+            self.punct_dup_btn.setEnabled(True)
             self.orphan_btn.setEnabled(True)
             self.typo_check_btn.setEnabled(True)
             self.dup_check_btn.setEnabled(True)
@@ -1401,15 +1303,17 @@ class MainWindow(QMainWindow):
             # 说明书检查：按章节存在性启停「实施例编号 / 摘要字数」按钮
             self._spec_tab_load_from_doc()
 
-            # 作废上一份文档的错别字/重复字词检查缓存——
+            # 作废上一份文档的三类检查缓存——
             # 旧结果的 para_idx 指向旧文档，残留会导致新文档显示
             # 旧结果、甚至按旧位置应用修正
-            self.typo_data = []
-            self.dup_data = []
+            for _attr, _title, _prefix in self.CHECK_KINDS.values():
+                setattr(self, _attr, [])
             self._current_check_kind = None
             self.typo_table.setRowCount(0)
-            self.typo_result_group.setTitle("📝 错别字 / 重复字词检查结果")
+            self.typo_result_group.setTitle("📝 错别字 / 重复字词 / 重复标点检查结果")
             self._set_apply_enabled(False)
+            # 孤立标记结果框是追加式的，不清会把上一份文档的结论留在新文档上
+            self.orphan_result_text.clear()
 
             # 加载新文档时清空历史与禁用「文件生成」
             self._clear_history()
@@ -1569,8 +1473,7 @@ class MainWindow(QMainWindow):
 
         # 标注/删除标记已写入内存 → 刷新 1框 显示最新效果，并失效检查缓存
         self.content_area.load(self.doc_data)
-        self._invalidate_typo_cache()
-        self._invalidate_dup_cache()
+        self._invalidate_check_cache()
 
         self._add_history(summary, detail)
         self.status_bar.showMessage(f"{summary} — 已写入内存，待生成文件")
@@ -1843,6 +1746,7 @@ class MainWindow(QMainWindow):
         # 清洗 / 检查组
         self.suoshu_btn.setEnabled(enabled)
         self.punct_btn.setEnabled(enabled)
+        self.punct_dup_btn.setEnabled(enabled)
         self.orphan_btn.setEnabled(enabled)
         self.typo_check_btn.setEnabled(enabled)
         self.dup_check_btn.setEnabled(enabled)
@@ -1859,6 +1763,20 @@ class MainWindow(QMainWindow):
         """设置标注操作按钮状态（与清洗组互锁，见 _set_doc_ops_enabled）"""
         self._set_doc_ops_enabled(enabled)
 
+    def _sync_math_color(self):
+        """把 1框 里 OMML 公式的排版取色同步到当前主题。
+
+        公式没有预览位图，是现场排版成图片的，颜色烘焙在像素里 —— 换主题
+        必须重排，否则深色主题下会留下一批看不见的深色公式。
+        """
+        try:
+            self.content_area.set_math_color(
+                ContentArea.MATH_COLOR_DARK if self.current_theme == "dark"
+                else ContentArea.MATH_COLOR_LIGHT
+            )
+        except Exception:
+            pass
+
     def _toggle_theme(self):
         """切换深色/浅色主题"""
         app = QApplication.instance()
@@ -1868,6 +1786,7 @@ class MainWindow(QMainWindow):
         else:
             app.setStyleSheet(DARK_THEME_QSS)
             self.current_theme = "dark"
+        self._sync_math_color()
         try:
             self.settings.set_theme(self.current_theme)
         except Exception:
@@ -1925,20 +1844,17 @@ class MainWindow(QMainWindow):
         try:
             self.settings.set_theme(self.current_theme)
             self.settings.set_geometry(self.saveGeometry())
-            if hasattr(self, "punct_halfwidth_cb"):
-                self.settings.set_bool("clean/punct_halfwidth", self.punct_halfwidth_cb.isChecked())
-            if hasattr(self, "punct_fullwidth_cb"):
-                self.settings.set_bool("clean/punct_fullwidth", self.punct_fullwidth_cb.isChecked())
-            if hasattr(self, "fix_punctuation_cb"):
-                self.settings.set_bool("clean/fix_consecutive_punct", self.fix_punctuation_cb.isChecked())
-            if hasattr(self, "open_dir_cb"):
-                self.settings.set_bool("gen/open_dir", self.open_dir_cb.isChecked())
-            if hasattr(self, "claim_dyn_trunc_cb"):
-                self.settings.set_bool("claim/dyn_truncate", self.claim_dyn_trunc_cb.isChecked())
-            if hasattr(self, "claim_dyn_fb_cb"):
-                self.settings.set_bool("claim/dyn_fallback", self.claim_dyn_fb_cb.isChecked())
-            if hasattr(self, "claim_vague_cb"):
-                self.settings.set_bool("claim/check_vague", self.claim_vague_cb.isChecked())
+            for _attr, _key in (
+                ("punct_halfwidth_cb", "clean/punct_halfwidth"),
+                ("punct_fullwidth_cb", "clean/punct_fullwidth"),
+                ("open_dir_cb",        "gen/open_dir"),
+                ("claim_dyn_trunc_cb", "claim/dyn_truncate"),
+                ("claim_dyn_fb_cb",    "claim/dyn_fallback"),
+                ("claim_vague_cb",     "claim/check_vague"),
+            ):
+                _cb = getattr(self, _attr, None)
+                if _cb is not None:
+                    self.settings.set_bool(_key, _cb.isChecked())
             if hasattr(self, "suoshu_checkboxes"):
                 for _name, _cb in self.suoshu_checkboxes.items():
                     self.settings.set_bool(f"clean/suoshu/{_name}", _cb.isChecked())
@@ -1982,10 +1898,13 @@ class MainWindow(QMainWindow):
         self._reposition_toasts()
 
     def resizeEvent(self, event):
-        """窗口缩放时让活跃 toast 跟随左下角"""
+        """窗口缩放时让活跃 toast 跟随左下角，并按新宽度重估跑马灯是否需要滚动"""
         super().resizeEvent(event)
         if getattr(self, "_active_toasts", None):
             self._reposition_toasts()
+        # 变窄后文件名可能重新溢出 —— tick 里会自行判断是否真的需要滚
+        if getattr(self, "_file_marquee_full", ""):
+            self._file_marquee_timer.start()
 
     # ===== 文本清洗 =====
 
@@ -2057,13 +1976,20 @@ class MainWindow(QMainWindow):
         self.clean_worker.progress.connect(self.progress_bar.setValue)
         self.clean_worker.finished.connect(self._on_clean_finished)
         self.clean_worker.error.connect(self._on_clean_error)
-        if action == "typo_check":
-            self.clean_worker.typo_results.connect(self._on_typo_results_ready)
-        elif action == "dup_check":
-            self.clean_worker.typo_results.connect(self._on_dup_results_ready)
+        kind = {
+            "typo_check": "typo",
+            "dup_check": "dup",
+            "punct_dup_check": "punct_dup",
+        }.get(action)
+        if kind:
+            self.clean_worker.typo_results.connect(
+                lambda res, _k=kind: self._on_check_results_ready(_k, res)
+            )
         self.clean_worker.start()
 
     def _on_clean_suoshu(self):
+        # 2框 可能停在「全文替换」页 —— 先切回章节勾选页，让用户看得见改的是哪几章
+        self.panel_stack.setCurrentIndex(1)
         selected = self._get_selected_suoshu_sections()
         if not selected:
             self._show_toast('请至少勾选一个章节！', "error")
@@ -2073,10 +1999,11 @@ class MainWindow(QMainWindow):
                                   selected_sections=selected)
 
     def _on_clean_punct(self):
+        # 2框 可能停在「重复标点结果表」页 —— 先切回勾选项页，让用户看得见按什么规则改
+        self.panel_stack.setCurrentIndex(2)
         do_half = self.punct_halfwidth_cb.isChecked()
         do_full = self.punct_fullwidth_cb.isChecked()
-        do_consec = self.fix_punctuation_cb.isChecked()
-        if not (do_half or do_full or do_consec):
+        if not (do_half or do_full):
             self._show_toast("请至少勾选一种标点处理方式！", "warning")
             return
         parts = []
@@ -2084,8 +2011,6 @@ class MainWindow(QMainWindow):
             parts.append("半角→全角")
         if do_full:
             parts.append("全角→半角")
-        if do_consec:
-            parts.append("修正连续标点")
         label = f"标点检查（{' + '.join(parts)}）"
         self._start_clean_worker(
             "punct",
@@ -2093,13 +2018,13 @@ class MainWindow(QMainWindow):
             history_label=label,
             do_halfwidth=do_half,
             do_fullwidth=do_full,
-            do_consecutive=do_consec,
         )
 
     def _on_detect_orphans(self):
+        # 标记字典为空也能跑——「图编号引用」那一半检查不依赖标记字典，
+        # 只是「标记名」那一半会被跳过（worker 里会如实说明）。
         if not self.current_marks:
-            self._show_toast("标记字典为空，无法检测！", "error")
-            return
+            self._show_toast("标记字典为空，本次仅检测图编号引用", "info")
         # 检测类不写入历史（不修改文档）
         self._start_clean_worker("orphan", "孤立附图标记检测", marks=self.current_marks)
 
@@ -2117,6 +2042,20 @@ class MainWindow(QMainWindow):
             self._current_check_kind = "typo"
             self._start_clean_worker("typo_check", "错别字检查")
 
+    def _on_punct_dup_check(self):
+        """点「重复标点检查」：切到 2框 共用结果表；首次点击跑一次扫描。
+
+        与错别字 / 重复字词不同——标点模块的 2框 默认停在「勾选项」卡片，
+        所以这里要显式切页；点 4列 的「▶ 执行标点检查」会再切回勾选项页。
+        """
+        self._snapshot_table_to_active_cache()
+        self.panel_stack.setCurrentIndex(4)      # 共用结果表页
+        self._current_check_kind = "punct_dup"
+        if self.punct_dup_data:
+            self._render_table_from_data(self.punct_dup_data)
+        else:
+            self._start_clean_worker("punct_dup_check", "重复标点检查")
+
     def _on_dup_check(self):
         """点击「重复字词检查」：切换显示重复字词结果；首次点击会跑一次扫描"""
         self._snapshot_table_to_active_cache()
@@ -2132,14 +2071,10 @@ class MainWindow(QMainWindow):
                 ignore_list = []
             self._start_clean_worker("dup_check", "重复字词检查", ignore_list=ignore_list)
 
-    def _on_typo_results_ready(self, results: list):
-        self.typo_data = results
-        if self._current_check_kind == "typo":
-            self._render_table_from_data(results)
-
-    def _on_dup_results_ready(self, results: list):
-        self.dup_data = results
-        if self._current_check_kind == "dup":
+    def _on_check_results_ready(self, kind: str, results: list):
+        """后台检查完成：写入该 kind 的缓存；若 2框 正显示它就立即渲染。"""
+        setattr(self, self.CHECK_KINDS[kind][0], results)
+        if self._current_check_kind == kind:
             self._render_table_from_data(results)
 
     def _on_apply_corrections(self):
@@ -2150,8 +2085,8 @@ class MainWindow(QMainWindow):
 
         # ① 把表格中的用户编辑回写到对应缓存（持久化建议）
         self._snapshot_table_to_active_cache()
-        data = self.typo_data if self._current_check_kind == "typo" else self.dup_data
-        label_prefix = "错别字修正" if self._current_check_kind == "typo" else "重复字词修正"
+        data = self._active_cache_list()
+        label_prefix = self.CHECK_KINDS[self._current_check_kind][2]
 
         # ② 从缓存中收集所有需要修改的项
         corrections = []
@@ -2233,26 +2168,34 @@ class MainWindow(QMainWindow):
             self._show_toast("未找到可替换的文本，可能内容已变动", "warning")
             return
 
-        label_prefix = "错别字修正" if self._current_check_kind == "typo" else "重复字词修正"
-        self._add_history(f"{label_prefix}（1 处）", f"{wrong} → {confirmed}")
-        # 本条已应用 → 从缓存与表格移除；其余行的 para_idx 不受影响仍有效
-        data.pop(row)
+        # apply_typo_corrections 是「整段替换该词的全部出现」，而结果表是逐处一行：
+        # 同段同词的其它行此刻已经一并被改掉了，留在表里再点只会提示"未找到"。
+        # 一并移除，并按实际处理的处数记历史。
+        siblings = [
+            j for j, it in enumerate(data)
+            if it.get("para_idx") == item["para_idx"] and it.get("wrong") == wrong
+        ]
+        if row not in siblings:
+            siblings.append(row)
+        label_prefix = self.CHECK_KINDS[self._current_check_kind][2]
+        self._add_history(
+            f"{label_prefix}（{len(siblings)} 处）", f"{wrong} → {confirmed}"
+        )
+        for j in sorted(siblings, reverse=True):
+            data.pop(j)
         self._render_table_from_data(data)
-        # 内存已变动 → 让 1框 与另一类检查缓存保持一致
+        # 内存已变动 → 刷新 1框，并让其余几类检查的缓存失效（它们的结果已过期）
         self.content_area.load(self.doc_data)
-        if self._current_check_kind == "typo":
-            self._invalidate_dup_cache()
-        else:
-            self._invalidate_typo_cache()
-        self._show_toast(f"已修改：{wrong} → {confirmed}", "success")
+        self._invalidate_check_cache(
+            *[k for k in self.CHECK_KINDS if k != self._current_check_kind]
+        )
+        n_hint = "" if len(siblings) == 1 else f"（同段 {len(siblings)} 处）"
+        self._show_toast(f"已修改：{wrong} → {confirmed}{n_hint}", "success")
 
     def _active_cache_list(self) -> list:
-        """返回当前模式对应的缓存列表"""
-        if self._current_check_kind == "typo":
-            return self.typo_data
-        if self._current_check_kind == "dup":
-            return self.dup_data
-        return []
+        """返回当前检查类型对应的缓存列表（就地可改：调用方会 pop 掉已处理的行）。"""
+        meta = self.CHECK_KINDS.get(self._current_check_kind)
+        return getattr(self, meta[0]) if meta else []
 
     def _snapshot_table_to_active_cache(self):
         """把表格「修改后」列(col 2)的当前值写回到对应缓存的 suggestion 字段
@@ -2282,10 +2225,9 @@ class MainWindow(QMainWindow):
             self.typo_table.setUpdatesEnabled(True)
 
         # 2框 标题随检查类型动态变化（计数并入），并更新应用按钮启用状态
-        if self._current_check_kind == "typo":
-            self.typo_result_group.setTitle(f"📝 错别字检查结果（共 {len(results)} 处）")
-        else:
-            self.typo_result_group.setTitle(f"🔁 重复字词检查结果（共 {len(results)} 处）")
+        meta = self.CHECK_KINDS.get(self._current_check_kind)
+        title = meta[1] if meta else "📝 检查结果"
+        self.typo_result_group.setTitle(f"{title}（共 {len(results)} 处）")
         self._set_apply_enabled(len(results) > 0)
 
         # 1框 内联高亮：把当前结果集全部标黄（空表则清空高亮）
@@ -2352,8 +2294,7 @@ class MainWindow(QMainWindow):
         # 应用错别字 / 重复字修正后：修正已写入内存，作废两类检查缓存，使下次检查
         # 重新扫描已修正的内容，避免再次报出已修复的问题。
         if action == "typo_apply":
-            self._invalidate_typo_cache()
-            self._invalidate_dup_cache()
+            self._invalidate_check_cache()
 
         # 改动文档内容的清洗操作（删"所述"/标点/应用错别字修正）已写入内存
         # → 刷新 1框 显示最新效果。检测类（orphan/typo_check/dup_check）不改文档、
@@ -2612,7 +2553,7 @@ class MainWindow(QMainWindow):
         """
         点击行内「忽略」：本次会话忽略。不写入任何持久词库。
 
-        - 从 message 中解析出术语（antecedent 的『所述X』里的 X；term 的两个相似词）
+        - 从 message 中解析出术语（antecedent 的『所述X』里的 X）
         - 加入 self._claim_session_ignore（仅当次会话有效，新开文档即清空）
         - 同类型且术语相同的其它行一并移除
         - vague / dependency / numbering 等其它类型的"忽略"只是从表格里移除该行
@@ -2629,10 +2570,6 @@ class MainWindow(QMainWindow):
             m = _re.search(r'『所述(.+?)』', msg)
             if m:
                 session_adds.append(m.group(1))
-        elif kind == "term":
-            m = _re.search(r'『(.+?)』与『(.+?)』', msg)
-            if m:
-                session_adds.extend([m.group(1), m.group(2)])
 
         for w in session_adds:
             if w:
@@ -2895,7 +2832,7 @@ class MainWindow(QMainWindow):
             "  • 取『所述』后的 N 字术语\n"
             "  • 如果找不到对应定义，就把末尾字砍掉，换成 N-1 字再试\n"
             "  • 继续缩短到 N-2、N-3 …，任一前缀匹配上就放过\n"
-            "  • 全部缩到 2 字仍不匹配才报错\n\n"
+            "  • 一直缩到 2 字仍不匹配，才判定为缺少引用基础\n\n"
             "例：N=6 时『所述齿轮安装在主』→ 砍 → 齿轮安装在 → 齿轮安装\n"
             "    → 齿轮（在前文出现过！）→ 放过\n\n"
             "适用场景：作为容错机制，能极大降低代理人改字数后产生的噪音。\n\n"

@@ -198,51 +198,10 @@ def _build_fullwidth_replace_dict(paragraph_text: str) -> dict:
     return result
 
 
-# 连续重复标点：覆盖全角 + 半角常见标点
-_CONSECUTIVE_PUNCT_MAP = {
-    "。。": "。",
-    "，，": "，",
-    "、、": "、",
-    "！！": "！",
-    "？？": "？",
-    "；；": "；",
-    "：：": "：",
-    ",,": ",",
-    "..": ".",
-    ";;": ";",
-    "::": ":",
-    "??": "?",
-    "!!": "!",
-}
-
-
-def fix_consecutive_punct(paragraphs, max_passes: int = 3, sections: dict = None) -> int:
-    """
-    修正连续重复的标点（如 ,,、。。、！！）。
-    多次循环以处理三连及以上情况（如 。。。 → 。。 → 。）。
-    若传入 sections，仅处理各章节范围内的段落。
-    返回受影响的段落数（去重计数）。
-    """
-    if sections:
-        indices = set()
-        for sec in sections.values():
-            indices.update(range(sec.start_idx, sec.end_idx))
-        targets = [(i, paragraphs[i]) for i in sorted(indices)]
-    else:
-        targets = list(enumerate(paragraphs))
-
-    affected = set()
-    for _ in range(max_passes):
-        changed_this_pass = False
-        for idx, para in targets:
-            if not para.text.strip():
-                continue
-            if annotate_paragraph_safe(para, _CONSECUTIVE_PUNCT_MAP):
-                affected.add(idx)
-                changed_this_pass = True
-        if not changed_this_pass:
-            break
-    return len(affected)
+# 注：曾经的 fix_consecutive_punct（"修正连续重复标点"勾选项，不问自动改）
+# 已在 V4.2.1 移除 —— 同一件事由「🔣 标点 → 重复标点检查」承担，
+# 后者会先把每一处列进 2框 结果表让用户逐条确认，比闷头替换安全得多。
+# 检出与建议逻辑见本文件 4c 节的 check_duplicate_punct。
 
 
 def unify_halfwidth_punct(paragraphs, sections: dict = None) -> int:
@@ -478,12 +437,14 @@ def check_typos_wordbank(paragraphs, sections: dict = None) -> list:
             continue
         # 同一段中每处出现各报一条（应用时会整段全部替换，
         # 逐条上报使显示数量与实际替换处数一致）；
-        # occurrence 按各 wrong 词在段内的出现次序计数
+        # occurrence 按各 wrong 词在段内的出现次序计数，**1 基**——
+        # 消费方 content_area._nth_occurrence / locate_issue 都按"第 n 次出现"
+        # (1 基) 解释该值，此处若发 0 基会让第 2 处之后全部定位/高亮错位一格。
         occ_counter: dict = {}
         for m in pattern.finditer(text):
             wrong = m.group(0)
-            occ = occ_counter.get(wrong, 0)
-            occ_counter[wrong] = occ + 1
+            occ = occ_counter.get(wrong, 0) + 1
+            occ_counter[wrong] = occ
             pos = m.start()
             # 提取上下文（前后各15字）
             start = max(0, pos - 15)
@@ -594,11 +555,99 @@ def check_duplicate_words(paragraphs, sections: dict = None,
     return results
 
 
+# ─────────────────────────────────────────
+# 4c. 重复标点检测（先看后改，结果进共用结果表）
+# ─────────────────────────────────────────
+
+# 参与检测的标点集合：全角常见停顿 + 对应半角 + 半角句点。
+# 逐条确认后经 apply_typo_corrections 写回，与错别字 / 重复字词同一条通路。
+_DUP_PUNCT_RUN_RE = re.compile(r'[。，、；：？！,;:?!.]{2,}')
+
+# 归一化：半角 → 对应全角；顿号在"重复"意义上与逗号同类
+# （「，、」「、，」属于同一个停顿被写了两遍，应一并报出）
+_PUNCT_NORM = {
+    ",": "，", ";": "；", ":": "：", "?": "？", "!": "！", ".": "。",
+    "、": "，",
+}
+
+
+def _dup_punct_suggestion(run: str) -> str:
+    """给一段重复标点选一个保留字符：优先全角，其次出现最多者，再次取首个。"""
+    full = [ch for ch in run if ch not in _PUNCT_NORM]   # 不在归一化表里的即全角本身
+    pool = full or list(run)
+    best, best_n = pool[0], 0
+    for ch in dict.fromkeys(pool):          # 保持首次出现顺序，平局取靠前的
+        n = pool.count(ch)
+        if n > best_n:
+            best, best_n = ch, n
+    return best
+
+
+def check_duplicate_punct(paragraphs, sections: dict = None) -> list:
+    """
+    检测「重复标点」——同一个停顿被连写了两遍以上，包括：
+        "。。" "，，" "、、"      同字符连写
+        "，," ",，" "。." ".。"   全角/半角混写
+        "，、" "、，"             逗号与顿号混写
+
+    只检测不修改；返回结构与错别字 / 重复字词检查一致，可直接进共用结果表，
+    并经 apply_typo_corrections 写回内存。
+
+    返回:
+        [{"para_idx": int, "section": str, "context": str,
+          "wrong": str, "suggestion": str, "kind": "punct_dup",
+          "occurrence": int(1 基)}, ...]
+    """
+    results = []
+
+    if sections:
+        indices = set()
+        for sec in sections.values():
+            indices.update(range(sec.start_idx, sec.end_idx))
+        target = sorted(indices)
+    else:
+        target = range(len(paragraphs))
+
+    locate = _make_locator_with_paragraphs(sections or {}, paragraphs)
+
+    for i in target:
+        text = paragraphs[i].text
+        if not text or not text.strip():
+            continue
+        occ_counter: dict = {}
+        for m in _DUP_PUNCT_RUN_RE.finditer(text):
+            run = m.group(0)
+            # 英文省略号 "..."（3 个及以上半角句点）是合法写法，跳过
+            if set(run) == {"."} and len(run) >= 3:
+                continue
+            # 归一化后必须全部相同，才算"同一个停顿写了两遍"；
+            # 「，。」这类不同停顿的连写含义不明确，不在本检查范围内
+            norm = {_PUNCT_NORM.get(ch, ch) for ch in run}
+            if len(norm) != 1:
+                continue
+            keep = _dup_punct_suggestion(run)
+            occ = occ_counter.get(run, 0) + 1
+            occ_counter[run] = occ
+            pos = m.start()
+            start = max(0, pos - 15)
+            end = min(len(text), pos + len(run) + 15)
+            results.append({
+                "para_idx": i,
+                "section": locate(i),
+                "context": text[start:end],
+                "wrong": run,
+                "suggestion": keep,
+                "kind": "punct_dup",
+                "occurrence": occ,
+            })
+    return results
+
+
 def merge_typo_results(*result_lists) -> list:
     """
     合并多个来源（词库 / 重复词等）的结果，
     去除重复项（同一段落同一 wrong 的同一处出现只保留一条；
-    occurrence 标记同段第几处出现，缺省视为第 0 处）。
+    occurrence 标记同段第几处出现（1 基），缺省视为第 1 处）。
     """
     seen = set()
     merged = []
@@ -606,7 +655,7 @@ def merge_typo_results(*result_lists) -> list:
         if not lst:
             continue
         for item in lst:
-            key = (item["para_idx"], item["wrong"], item.get("occurrence", 0))
+            key = (item["para_idx"], item["wrong"], item.get("occurrence", 1))
             if key in seen:
                 continue
             seen.add(key)

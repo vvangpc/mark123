@@ -96,9 +96,93 @@ def test_modes_consistent_on_basis():
     print("[OK] 全部模式下流量调节阀均有引用基础")
 
 
+def test_dynamic_truncate_boundaries():
+    """动态截断的边界判定：黑名单词打头 / 单字虚词 / 序数前缀 / 尾部方位词。"""
+    from core.claim_check import (
+        _extract_term_dynamic_truncate as _trunc,
+        _trim_stopchars, _build_blacklist_lookup, DEFAULT_BOUNDARY_BLACKLIST,
+    )
+    f, w, l = _build_blacklist_lookup(DEFAULT_BOUNDARY_BLACKLIST)
+
+    def term(t):
+        return _trim_stopchars(_trunc(t, 0, f, w, l))
+
+    cases = {
+        # 黑名单词打头的常见部件名：旧实现截出空串 → 整条漏检
+        "安装座上设有孔": "安装座",
+        "连接杆的一端": "连接杆",
+        "固定板": "固定板",
+        "设置槽": "设置槽",
+        # 序数前缀「第X」不算进 min_keep，否则截成"第一"
+        "第一连接件的端部": "第一连接件",
+        "第二安装座": "第二安装座",
+        # 单字虚词是最可靠的右边界（黑名单里只有双字词）
+        "流量调节阀的入口与气源连通": "流量调节阀",
+        "上盖与下盖": "上盖",
+        # 尾部单字方位词剪掉，但量词"件"不能剪
+        "壳体上的孔": "壳体",
+        "弹性件": "弹性件",
+        # 黑名单词仍正常生效
+        "齿轮安装在主轴上": "齿轮",
+        "装置包括流量调节阀": "装置",
+    }
+    for text, expect in cases.items():
+        got = term(text)
+        assert got == expect, f"截断 {text!r}: 期望 {expect!r}，实际 {got!r}"
+    print("[OK] 动态截断边界：黑名单打头 / 单字虚词 / 序数前缀 / 尾部方位词")
+
+
+def test_short_term_channel():
+    """"所述"后不足 n 字时仍参与检查，且已定义的短术语不误报。"""
+    # n=6，而"所述壳体，"后面只有 2 个汉字就遇到标点 ——
+    # 旧实现要求恰好 n 字，取不满就 continue，该处**完全不检查**。
+    有基础 = ["1.一种装置，其特征在于，包括壳体；所述壳体，其上设有孔。"]
+    assert not [m for m in _antecedent(有基础, 6) if "壳体" in m], "已定义的短术语不应误报"
+
+    无基础 = ["1.一种装置，其特征在于，包括底板；所述壳体，其上设有孔。"]
+    msgs = _antecedent(无基础, 6)
+    assert any("壳体" in m for m in msgs), f"n=6 时短术语'壳体'应被检出，实际：{msgs}"
+    print("[OK] 短术语通道：不足 n 字的'所述X'仍被检查，且不凭空误报")
+
+
+def test_truncate_overrun_falls_back():
+    """截断溢出（黑名单没盖住的动词）不应报出长串误判。"""
+    from config.config_manager import get_builtin_boundary_blacklist
+    lines = [
+        "1.一种方法，其特征在于，包括受力分析单元；"
+        "将所述受力分析单元简化为梁单元力学模型。",
+    ]
+    msgs = _antecedent(
+        lines, 4,
+        use_dynamic_truncate=True,
+        boundary_blacklist=get_builtin_boundary_blacklist(),
+    )
+    bad = [m for m in msgs if "受力分析单元" in m]
+    assert not bad, f"截断溢出应回落到 n 字术语而非报长串：{bad}"
+    print("[OK] 截断溢出回落，不再报出整句长串")
+
+
+def test_vague_overlapping_words_report_once():
+    """重叠的不确定用语（优选/优选地、基本/基本上、大约/约为）只报一条。"""
+    from core.claim_check import check_vague_terms, ClaimInfo
+    claims = {1: ClaimInfo(
+        no=1, para_indices=[0],
+        text="一种装置，优选地设有基本上水平的板，大约为10mm。", raw_text="",
+    )}
+    msgs = [r["message"] for r in check_vague_terms(claims)]
+    assert len(msgs) == 3, f"3 处问题应报 3 条，实际 {len(msgs)} 条：{msgs}"
+    assert any("优选地" in m for m in msgs) and not any(m.endswith("『优选』") for m in msgs)
+    assert any("基本上" in m for m in msgs) and not any(m.endswith("『基本』") for m in msgs)
+    print("[OK] 不确定用语重叠词只报最长的一条")
+
+
 if __name__ == "__main__":
     test_term_after_short_suoshu_has_basis()
     test_term_after_copula_has_basis()
     test_genuinely_missing_basis_still_flagged()
     test_modes_consistent_on_basis()
+    test_dynamic_truncate_boundaries()
+    test_short_term_channel()
+    test_truncate_overrun_falls_back()
+    test_vague_overlapping_words_report_once()
     print("\nAll claim_check antecedent tests passed.")

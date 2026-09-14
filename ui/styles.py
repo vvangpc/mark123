@@ -76,6 +76,40 @@ QTextEdit:hover, QPlainTextEdit:hover {
     border-color: rgba(0, 191, 165, 0.4);
 }
 
+/* ===== 单行输入框（全文替换 / 词库搜索 / 文件后缀 …）=====
+   此前 QLineEdit 完全没有样式，在深色主题下会用 Qt 默认白底灰框，
+   与四周的 QTextEdit / QPlainTextEdit 明显割裂。 */
+QLineEdit {
+    background-color: rgba(15, 20, 25, 0.7);
+    color: #ffffff;
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    border-radius: 8px;
+    padding: 6px 12px;
+    min-height: 22px;
+    font-size: 13px;
+    selection-background-color: #00bfa5;
+    selection-color: #ffffff;
+}
+
+QLineEdit:hover {
+    border-color: rgba(0, 191, 165, 0.4);
+}
+
+QLineEdit:focus {
+    border-color: #00bfa5;
+    background-color: rgba(20, 25, 32, 0.85);
+}
+
+QLineEdit:disabled {
+    color: rgba(255, 255, 255, 0.35);
+    border-color: rgba(255, 255, 255, 0.06);
+}
+
+QLineEdit#replaceEdit {
+    font-size: 14px;
+    min-height: 26px;
+}
+
 /* ===== 按钮 ===== */
 QPushButton {
     background-color: rgba(15, 20, 25, 0.8);
@@ -608,6 +642,38 @@ QTextEdit:focus, QPlainTextEdit:focus {
 
 QTextEdit:hover, QPlainTextEdit:hover {
     border-color: rgba(0, 191, 165, 0.4);
+}
+
+/* ===== 单行输入框（全文替换 / 词库搜索 / 文件后缀 …）===== */
+QLineEdit {
+    background-color: #ffffff;
+    color: #2c3e50;
+    border: 1px solid rgba(0, 0, 0, 0.15);
+    border-radius: 8px;
+    padding: 6px 12px;
+    min-height: 22px;
+    font-size: 13px;
+    selection-background-color: #00bfa5;
+    selection-color: #ffffff;
+}
+
+QLineEdit:hover {
+    border-color: rgba(0, 191, 165, 0.4);
+}
+
+QLineEdit:focus {
+    border-color: #00bfa5;
+    background-color: #fafafa;
+}
+
+QLineEdit:disabled {
+    color: #b0bec5;
+    background-color: #f5f5f5;
+}
+
+QLineEdit#replaceEdit {
+    font-size: 14px;
+    min-height: 26px;
 }
 
 /* ===== 按钮 ===== */

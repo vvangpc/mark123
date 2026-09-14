@@ -95,6 +95,24 @@ def _has_image(para) -> bool:
     return False
 
 
+_NS_MATH = "{http://schemas.openxmlformats.org/officeDocument/2006/math}"
+
+
+def has_readonly_object(para) -> bool:
+    """段落是否含「不能被整段文本回写覆盖」的内联对象：图片 / OLE / OMML 公式。
+
+    比 _has_image 多认 OMML —— Word「插入→公式」的 m:oMath 不是图片，但同样
+    不能让 1框 的整行文本回写过去：回写只改 w:t，公式的 XML 虽然侥幸保住，
+    可行里的【公式】占位 / U+FFFC 会被当成正文写进 w:t，污染输出文件。
+
+    单列一个函数而不是放宽 _has_image：后者还被「说明书附图」区间识别复用
+    （doc_parser 里按"有图的段"找附图区），放宽会让含公式的正文段被误判成附图。
+    """
+    if _has_image(para):
+        return True
+    return bool(para._element.findall(f'.//{_NS_MATH}oMath'))
+
+
 def _trim_patent_title_from_claims(paragraphs, sections: dict) -> None:
     """
     把混入到"权利要求书"尾部的专利名称（说明书首页发明名称标题）修剪掉。

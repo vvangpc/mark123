@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
 workers.py — 后台线程
-抽离自 main_window.py，包含：
+main_window.py 唯一的 worker 来源（曾经两边各有一份、开始漂移，已合并到此处）：
 - _longest_nonspace_run 工具函数
 - AnnotateWorker / CleanWorker 两个后台 QThread
 """
@@ -14,8 +14,8 @@ from core.annotator import (
 )
 from core.cleaner import (
     remove_suoshu, unify_halfwidth_punct, convert_fullwidth_to_halfwidth,
-    detect_orphan_marks, fix_consecutive_punct, detect_orphan_figures,
-    check_typos_wordbank, check_duplicate_words,
+    detect_orphan_marks, detect_orphan_figures,
+    check_typos_wordbank, check_duplicate_words, check_duplicate_punct,
     merge_typo_results, apply_typo_corrections,
 )
 
@@ -126,7 +126,8 @@ class CleanWorker(QThread):
     finished = pyqtSignal(str)
     error = pyqtSignal(str)
     progress = pyqtSignal(int)
-    typo_results = pyqtSignal(list)  # 仅 typo_check 动作使用
+    # 三类"先看后改"的检查共用此信号：typo_check / dup_check / punct_dup_check
+    typo_results = pyqtSignal(list)
 
     def __init__(self, doc_data: dict, action: str, **kwargs):
         super().__init__()
@@ -150,19 +151,15 @@ class CleanWorker(QThread):
             elif self.action == "punct":
                 do_half = self.kwargs.get("do_halfwidth", True)
                 do_full = self.kwargs.get("do_fullwidth", False)
-                do_consec = self.kwargs.get("do_consecutive", True)
-                half_n = full_n = consec_n = 0
+                half_n = full_n = 0
 
-                # 顺序：1) 半角→全角  2) 全角→半角(可选)  3) 修正连续重复
-                # 把 1/2 放在 3 之前可避免出现 ".。" 这种混合连续无法被修正
+                # 顺序：1) 半角→全角  2) 全角→半角(可选)
+                # 连续重复标点不在这里闷头改 —— 交给「重复标点检查」先看后改
                 if do_half:
                     half_n = unify_halfwidth_punct(paragraphs, sections)
-                self.progress.emit(40)
+                self.progress.emit(60)
                 if do_full:
                     full_n = convert_fullwidth_to_halfwidth(paragraphs, sections)
-                self.progress.emit(70)
-                if do_consec:
-                    consec_n = fix_consecutive_punct(paragraphs, sections=sections)
                 self.progress.emit(100)
 
                 parts = []
@@ -170,8 +167,6 @@ class CleanWorker(QThread):
                     parts.append(f"半角→全角 {half_n} 段")
                 if do_full:
                     parts.append(f"全角→半角 {full_n} 段")
-                if do_consec:
-                    parts.append(f"修正连续标点 {consec_n} 段")
                 self.finished.emit("标点检查完成：" + "，".join(parts))
 
             elif self.action == "orphan":
@@ -182,7 +177,10 @@ class CleanWorker(QThread):
                 self.progress.emit(100)
 
                 parts = []
-                if orphans:
+                if not marks:
+                    # 标记字典为空 ≠ 所有标记都出现过，必须如实说明是"跳过"
+                    parts.append("ℹ️ 附图标记字典为空，本次跳过标记名检查")
+                elif orphans:
                     lines = [f"  {num} — {name}" for num, name in orphans]
                     parts.append(
                         "⚠️ 孤立附图标记（附图说明有、具体实施方式无）：\n"
@@ -218,6 +216,13 @@ class CleanWorker(QThread):
                 self.typo_results.emit(dup_results)
                 count = len(dup_results)
                 self.finished.emit(f"重复字词检查完成，发现 {count} 处疑似问题")
+
+            elif self.action == "punct_dup_check":
+                punct_results = check_duplicate_punct(paragraphs, sections)
+                self.progress.emit(100)
+                self.typo_results.emit(punct_results)
+                count = len(punct_results)
+                self.finished.emit(f"重复标点检查完成，发现 {count} 处疑似问题")
 
             elif self.action == "typo_apply":
                 corrections = self.kwargs.get("corrections", [])
