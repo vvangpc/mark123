@@ -6,7 +6,10 @@ cleaner.py — 文本清洗功能模块
 """
 import re
 from functools import lru_cache
+from types import SimpleNamespace
+
 from core.annotator import annotate_paragraph_safe, _build_xml_char_map
+from core.mark_extractor import strip_reference_marks
 from core.paragraph_edit import display_text, replace_chars, set_paragraph_text
 
 # 权利要求序号行头（如 "1." / "2、" / "3．"）；与 claim_check._CLAIM_HEAD_RE 语义一致
@@ -755,6 +758,45 @@ def apply_typo_corrections(paragraphs, corrections: list) -> int:
         if set_paragraph_text(para, new_text):
             count += len(kept)
     return count
+
+
+def run_ignoring_marks(check_fn, paragraphs, sections=None, marks=None, **kwargs) -> list:
+    """在去掉附图标记的文本上跑 check_fn（错别字 / 重复字词 / 重复标点检查），
+    再把每条结果映射回带标记的原文。
+
+    映射后 wrong 是原文里对应的那一段（中间夹着标记时连标记一起，如「连接杆座（12）连接杆座」），
+    occurrence / context 按原文重算——定位、标黄、单条修改、批量应用都照旧在原文上进行。
+    这样标注后再检查，结果与标注前一致：「连接杆座连接杆座」标注后重复单元连标记超过
+    6 字上限，直接查是漏的，去掉标记再查就能查出。
+    """
+    view = list(paragraphs)
+    maps = {}
+    for i, p in enumerate(paragraphs):
+        orig = p.text or ""
+        text, idx = strip_reference_marks(orig, marks)
+        if text != orig:
+            view[i] = SimpleNamespace(text=text)
+            maps[i] = (text, idx, orig)
+    out = []
+    for r in check_fn(view, sections, **kwargs):
+        m = maps.get(r.get("para_idx"))
+        if m is None:
+            out.append(r)
+            continue
+        text, idx, orig = m
+        wrong = r.get("wrong") or ""
+        pos = nth_occurrence(text, wrong, int(r.get("occurrence", 1) or 1))
+        if pos < 0:
+            continue
+        s, e = idx[pos], idx[pos + len(wrong) - 1] + 1
+        orig_wrong = orig[s:e]
+        out.append({
+            **r,
+            "wrong": orig_wrong,
+            "occurrence": occurrence_at(orig, orig_wrong, s),
+            "context": orig[max(0, s - 15):e + 15],
+        })
+    return out
 
 
 def remap_after_edit(old_text: str, new_text: str, pos: int, old_len: int,

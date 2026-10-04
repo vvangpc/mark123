@@ -299,6 +299,58 @@ def test_citation_formula_variants():
     print("[OK] 引用语变体（之一 / 中的任一项 / 长编号串）")
 
 
+def test_strip_reference_marks():
+    """去附图标记：括号编号 + 标记字典里的无括号写法；步骤号 / 权利要求编号不动。"""
+    from core.claim_check import strip_reference_marks as strip
+    cases = {
+        "所述齿圈（1）套设于底座(2)上": "所述齿圈套设于底座上",
+        "连接件 (3a)与侧板（11、12）": "连接件与侧板",
+        "（1）获取图像；根据权利要求1(2)所述": "（1）获取图像；根据权利要求1(2)所述",
+        "所述齿圈1与夹指2连接，共10个": "所述齿圈与夹指连接，共10个",
+    }
+    for src, want in cases.items():
+        got, idx = strip(src, {1: "齿圈", 2: "夹指"})
+        assert got == want, f"{src!r} → {got!r}，期望 {want!r}"
+        assert len(idx) == len(got) + 1 and all(src[idx[k]] == got[k] for k in range(len(got)))
+    print("[OK] 去附图标记：括号编号 / 无括号写法，步骤号与权项编号不动")
+
+
+def test_ignore_marks_matches_unmarked_text():
+    """忽略标记时，已标注权利要求的检查结果与未标注时一致，anchor 落回带标记的原文。"""
+    from core.claim_check import run_all_checks
+    from config.config_manager import get_builtin_boundary_blacklist
+    plain = [
+        "1.一种装置，其特征在于，包括齿圈、夹指和齿圈座；所述齿圈座套设于所述齿轴，",
+        "所述夹指与所述齿圈连接",
+    ]
+    marked = [
+        "1.一种装置，其特征在于，包括齿圈（1）、夹指（2）和齿圈（1）座；所述齿圈（1）座套设于所述齿轴，",
+        "所述夹指（2）与所述齿圈（1）连接",
+    ]
+    marks = {1: "齿圈", 2: "夹指"}
+    bl = get_builtin_boundary_blacklist()
+    for kw in _ALL_MODES:
+        for n in (2, 3, 4):
+            a = run_all_checks([_Shell(t) for t in marked], 0, 2, n=n, boundary_blacklist=bl,
+                               ignore_marks=True, marks=marks, **kw)
+            b = run_all_checks([_Shell(t) for t in plain], 0, 2, n=n, boundary_blacklist=bl, **kw)
+            assert [r["message"] for r in a] == [r["message"] for r in b], f"n={n} {kw}"
+            for r in a:
+                if r.get("anchor"):
+                    assert any(r["anchor"] in marked[i] for i in range(r["para_idx"], 2)), r
+    res = run_all_checks([_Shell(t) for t in marked], 0, 2, n=4, ignore_marks=True, marks=marks)
+    anchors = {r["message"]: r.get("anchor") for r in res}
+    assert anchors["『所述齿圈座套』缺少引用基础"] == "所述齿圈（1）座套", anchors
+    ending = next(r for r in res if r["kind"] == "ending")
+    assert ending["para_idx"] == 1 and ending["anchor"] == "所述夹指（2）与所述齿圈（1）连接", ending
+    # 推荐组合（截断+回退）：齿圈座 有引用基础，只报真正缺的 齿轴
+    res = run_all_checks([_Shell(t) for t in marked], 0, 2, n=2, boundary_blacklist=bl,
+                         use_dynamic_truncate=True, use_dynamic_fallback=True,
+                         ignore_marks=True, marks=marks)
+    assert [r["message"] for r in res if r["kind"] == "antecedent"] == ["『所述齿轴』缺少引用基础"], res
+    print("[OK] 忽略标记：结果与未标注一致，定位锚点映射回原文")
+
+
 def test_vague_overlapping_words_report_once():
     """重叠的不确定用语（优选/优选地、基本/基本上、大约/约为）只报一条。"""
     from core.claim_check import check_vague_terms, ClaimInfo
@@ -331,5 +383,7 @@ if __name__ == "__main__":
     test_missing_term_reported_once()
     test_result_points_at_actual_paragraph()
     test_citation_formula_variants()
+    test_strip_reference_marks()
+    test_ignore_marks_matches_unmarked_text()
     test_vague_overlapping_words_report_once()
     print("\nAll claim_check antecedent tests passed.")

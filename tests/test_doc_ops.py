@@ -17,6 +17,7 @@ import sys
 import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import tests.isolation  # noqa: F401  测试不写用户真实的设置 / 配置目录
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from docx import Document
@@ -241,6 +242,113 @@ def test_confirm_marks_rewrites_all_mark_paragraphs():
     print("[OK] 确认标记：合并写入首段并保留前缀，其余标记段清空，1框 刷新")
 
 
+def test_claim_check_ignores_marks_in_ui():
+    """已标注的权利要求：默认「忽略附图标记」，结果按未标注文本，单击定位落在带标记的原文上。"""
+    from PyQt6.QtWidgets import QApplication
+    from ui.main_window import MainWindow
+    app = QApplication.instance() or QApplication(sys.argv)
+    path = _make_docx([
+        "权利要求书",
+        "1.一种装置，其特征在于，包括齿圈（1）和齿圈（1）座；所述齿圈（1）座套设于所述齿轴。",
+        "附图说明",
+        "附图标记：1-齿圈。",
+    ])
+    win = MainWindow()
+    win._show_toast = lambda *a, **k: None
+    win._load_document(path)
+    assert win.claim_ignore_marks_cb.isChecked(), "默认应忽略附图标记"
+    win.claim_dyn_trunc_cb.setChecked(True)
+    win.claim_dyn_fb_cb.setChecked(True)
+    win._on_claim_check_start()
+    msgs = [r["message"] for r in win._claim_results]
+    assert msgs == ["『所述齿轴』缺少引用基础"], msgs
+    assert win._locate_claim_in_content(0) is None and win.content_area._active_issue
+
+    # 定长 4 字：「所述齿圈（1）座套」去标记后取「齿圈座套」，锚点映射回带标记的原文
+    win.claim_dyn_trunc_cb.setChecked(False)
+    win.claim_dyn_fb_cb.setChecked(False)
+    win._claim_n = 4
+    win._on_claim_check_start()
+    r = next(r for r in win._claim_results if "齿圈座" in r["message"])
+    assert r["anchor"] == "所述齿圈（1）座套", r
+    assert win.content_area.locate_claim_issue(r["para_idx"], r["anchor"])
+    win._unsaved = False
+    win.close()
+    print("[OK] 权项检查默认忽略附图标记，定位落在带标记的原文")
+
+
+def test_text_checks_ignore_marks():
+    """错别字 / 重复字词 / 重复标点：忽略标记后查出被标记隔开的问题，结果映射回原文可直接应用。"""
+    from core.cleaner import (
+        run_ignoring_marks, check_duplicate_words, check_typos_wordbank,
+        check_duplicate_punct, apply_typo_corrections,
+    )
+    marks = {12: "连接杆座", 2: "壳体"}
+    p = _para('<w:r><w:t>所述连接杆座（12）连接杆座（12）套设于壳体2上，壳体（2），，权力要求</w:t></w:r>')
+
+    # 带标记时重复单元「连接杆座（12）」超过 6 字上限，查不出
+    assert not [r for r in check_duplicate_words([p]) if "连接杆座" in r["wrong"]]
+    dup = [r for r in run_ignoring_marks(check_duplicate_words, [p], None, marks)
+           if "连接杆座" in r["wrong"]]
+    assert len(dup) == 1 and dup[0]["wrong"] == "连接杆座（12）连接杆座", dup
+    assert dup[0]["suggestion"] == "连接杆座", dup
+
+    punct = run_ignoring_marks(check_duplicate_punct, [p], None, marks)
+    assert [(r["wrong"], r["occurrence"]) for r in punct] == [("，，", 1)], punct
+    typo = run_ignoring_marks(check_typos_wordbank, [p], None, marks)
+    assert [r["wrong"] for r in typo] == ["权力要求"], typo
+
+    n = apply_typo_corrections([p], [
+        {"para_idx": 0, "wrong": r["wrong"], "confirmed_fix": r["suggestion"],
+         "occurrence": r["occurrence"]} for r in dup + punct + typo
+    ])
+    assert n == 3 and p.text == "所述连接杆座（12）套设于壳体2上，壳体（2），权利要求", p.text
+    print("[OK] 错别字 / 重复字词 / 重复标点：忽略标记检查，结果映射回原文")
+
+
+def test_ignore_marks_toggle_shared_in_ui():
+    """四个模块的「忽略附图标记」同步；重复字词检查按去标记文本查出、定位与单条修改落在原文。"""
+    from PyQt6.QtWidgets import QApplication
+    from ui.main_window import MainWindow
+    from ui.workers import CleanWorker
+    app = QApplication.instance() or QApplication(sys.argv)
+    path = _make_docx([
+        "技术领域", "本发明涉及夹具。",
+        "附图说明", "附图标记：12-连接杆座。",
+        "具体实施方式", "所述连接杆座（12）连接杆座（12）固定。",
+    ])
+    win = MainWindow()
+    win._show_toast = lambda *a, **k: None
+    win._load_document(path)
+    cbs = win._ignore_marks_cbs
+    assert len(cbs) == 4 and all(cb.isChecked() for cb in cbs)
+    cbs[1].setChecked(False)
+    assert not any(cb.isChecked() for cb in cbs), "勾一处，其它同步"
+    assert win._ignore_marks_kwargs() == {}
+    cbs[2].setChecked(True)
+    assert all(cb.isChecked() for cb in cbs)
+
+    got = []
+    w = CleanWorker(win.doc_data, "dup_check", ignore_list=[], **win._ignore_marks_kwargs())
+    w.typo_results.connect(got.append)
+    w.run()
+    rows = [r for r in got[0] if "连接杆座" in r["wrong"]]
+    assert len(rows) == 1 and rows[0]["wrong"] == "连接杆座（12）连接杆座", got
+    win._current_check_kind = "dup"
+    win.dup_data = rows
+    win._render_table_from_data(rows)
+    assert win.content_area.locate_issue(rows[0]["para_idx"], rows[0]["wrong"], rows[0]["occurrence"])
+    win._apply_single_correction(0)
+    assert any(p.text == "所述连接杆座（12）固定。" for p in win.doc_data["paragraphs"])
+
+    win.dup_data = [{"para_idx": 0, "wrong": "x", "suggestion": "y"}]
+    cbs[0].setChecked(False)
+    assert win.dup_data == [], "切换口径后旧结果作废"
+    win._unsaved = False
+    win.close()
+    print("[OK] 四处开关同步；重复字词按去标记文本查出，定位 / 修改落在原文")
+
+
 if __name__ == "__main__":
     test_writeback_keeps_structure_and_formatting()
     test_halfwidth_punct_per_position()
@@ -253,4 +361,7 @@ if __name__ == "__main__":
     test_update_notes_list()
     test_content_area_edit_safety()
     test_confirm_marks_rewrites_all_mark_paragraphs()
+    test_claim_check_ignores_marks_in_ui()
+    test_text_checks_ignore_marks()
+    test_ignore_marks_toggle_shared_in_ui()
     print("\nAll doc-ops tests passed.")

@@ -173,6 +173,7 @@ class MainWindow(QMainWindow):
         self._claim_loaded = False         # 当前文档是否已加载过权利要求书内容
         self._claim_n = 2                  # 当前滑窗字数（按钮 / 自定义共享）
         self._claim_session_ignore = set() # 本次会话内结果行「忽略」记录（不持久化）
+        self._ignore_marks_cbs = []        # 四个模块的「忽略附图标记」开关（共用一个设置）
         # 说明书检查（实施例编号 / 摘要字数）状态
         self._spec_impl_ok = False         # 当前文档是否有「具体实施方式」章节
         self._spec_abs_ok = False          # 当前文档是否有「说明书摘要」章节
@@ -225,6 +226,7 @@ class MainWindow(QMainWindow):
             ("claim_dyn_trunc_cb",  "claim/dyn_truncate",          False),
             ("claim_dyn_fb_cb",     "claim/dyn_fallback",          False),
             ("claim_vague_cb",      "claim/check_vague",           True),
+            ("claim_ignore_marks_cb", "check/ignore_marks",        True),   # 四处共用
         ):
             try:
                 getattr(self, _attr).setChecked(
@@ -643,6 +645,7 @@ class MainWindow(QMainWindow):
         v.addWidget(self.punct_btn)
 
         v.addWidget(self._nav_caption("重复标点"))
+        self._add_ignore_marks_row(v)
         self.punct_dup_btn = self._nav_btn("🔁 重复标点检查")
         self.punct_dup_btn.setEnabled(False)
         self.punct_dup_btn.setToolTip(
@@ -832,6 +835,48 @@ class MainWindow(QMainWindow):
             if b is not None:
                 b.setEnabled(flag)
 
+    def _add_ignore_marks_row(self, layout) -> QCheckBox:
+        """往 4列 加一行「忽略附图标记」开关。
+
+        权项 / 错别字 / 重复字 / 标点 四个模块各有一个，共用同一个设置：
+        勾任一处，其它几处同步（见 _on_ignore_marks_toggled）。
+        """
+        row = QHBoxLayout()
+        row.setSpacing(4)
+        cb = QCheckBox()
+        cb.setChecked(True)
+        cb.setCursor(Qt.CursorShape.PointingHandCursor)
+        cb.toggled.connect(self._on_ignore_marks_toggled)
+        row.addWidget(cb)
+        label = QLabel(
+            '<a href="info" style="text-decoration:none;color:inherit;">忽略附图标记</a>'
+        )
+        label.setCursor(Qt.CursorShape.PointingHandCursor)
+        label.setToolTip("点击查看功能说明")
+        label.linkActivated.connect(self._on_ignore_marks_link)
+        row.addWidget(label)
+        row.addStretch()
+        layout.addLayout(row)
+        self._ignore_marks_cbs.append(cb)
+        return cb
+
+    def _on_ignore_marks_toggled(self, checked: bool):
+        """四处开关同步；已有的错别字 / 重复字 / 重复标点结果是按另一种口径查的，作废。"""
+        for cb in self._ignore_marks_cbs:
+            if cb.isChecked() != checked:
+                cb.blockSignals(True)
+                cb.setChecked(checked)
+                cb.blockSignals(False)
+        if hasattr(self, "typo_table"):
+            self._invalidate_check_cache()
+
+    def _ignore_marks_kwargs(self) -> dict:
+        """错别字 / 重复字 / 重复标点检查的 worker 参数。"""
+        if not self.claim_ignore_marks_cb.isChecked():
+            return {}
+        self._sync_marks_from_editor()
+        return {"ignore_marks": True, "marks": dict(self.current_marks or {})}
+
     def _build_typo_nav(self) -> QWidget:
         """错别字模块 4列：检查 + 应用所有修改 + 词库（navActionBtn 风格）。"""
         w = QWidget()
@@ -841,6 +886,7 @@ class MainWindow(QMainWindow):
         v.setSpacing(5)
 
         v.addWidget(self._nav_caption("检查"))
+        self._add_ignore_marks_row(v)
         self.typo_check_btn = self._nav_btn("🔍 错别字检查", kind="primary")
         self.typo_check_btn.setEnabled(False)
         self.typo_check_btn.clicked.connect(self._on_typo_check)
@@ -871,6 +917,7 @@ class MainWindow(QMainWindow):
         v.setSpacing(5)
 
         v.addWidget(self._nav_caption("检查"))
+        self._add_ignore_marks_row(v)
         self.dup_check_btn = self._nav_btn("🔁 重复字词检查", kind="primary")
         self.dup_check_btn.setEnabled(False)
         self.dup_check_btn.clicked.connect(self._on_dup_check)
@@ -1030,6 +1077,9 @@ class MainWindow(QMainWindow):
         vague_row.addWidget(self.claim_vague_label)
         vague_row.addStretch()
         v.addLayout(vague_row)
+
+        # 忽略附图标记（默认勾选）：已标注的权利要求按未标注的文本检查
+        self.claim_ignore_marks_cb = self._add_ignore_marks_row(v)
 
         self.claim_check_btn = self._nav_btn("▶ 开始检查")
         self.claim_check_btn.setEnabled(False)
@@ -1921,6 +1971,7 @@ class MainWindow(QMainWindow):
                 ("claim_dyn_trunc_cb", "claim/dyn_truncate"),
                 ("claim_dyn_fb_cb",    "claim/dyn_fallback"),
                 ("claim_vague_cb",     "claim/check_vague"),
+                ("claim_ignore_marks_cb", "check/ignore_marks"),
             ):
                 _cb = getattr(self, _attr, None)
                 if _cb is not None:
@@ -2111,7 +2162,7 @@ class MainWindow(QMainWindow):
         else:
             # 启动后台扫描；finished 回调里会自动渲染
             self._current_check_kind = "typo"
-            self._start_clean_worker("typo_check", "错别字检查")
+            self._start_clean_worker("typo_check", "错别字检查", **self._ignore_marks_kwargs())
 
     def _on_punct_dup_check(self):
         """点「重复标点检查」：切到 2框 共用结果表；首次点击跑一次扫描。
@@ -2125,7 +2176,8 @@ class MainWindow(QMainWindow):
         if self.punct_dup_data:
             self._render_table_from_data(self.punct_dup_data)
         else:
-            self._start_clean_worker("punct_dup_check", "重复标点检查")
+            self._start_clean_worker("punct_dup_check", "重复标点检查",
+                                     **self._ignore_marks_kwargs())
 
     def _on_dup_check(self):
         """点击「重复字词检查」：切换显示重复字词结果；首次点击会跑一次扫描"""
@@ -2140,7 +2192,8 @@ class MainWindow(QMainWindow):
                 ignore_list = load_dup_ignore_list()
             except Exception:
                 ignore_list = []
-            self._start_clean_worker("dup_check", "重复字词检查", ignore_list=ignore_list)
+            self._start_clean_worker("dup_check", "重复字词检查", ignore_list=ignore_list,
+                                     **self._ignore_marks_kwargs())
 
     def _on_check_results_ready(self, kind: str, results: list):
         """后台检查完成：写入该 kind 的缓存；若 2框 正显示它就立即渲染。"""
@@ -2505,6 +2558,10 @@ class MainWindow(QMainWindow):
             use_trunc = self.claim_dyn_trunc_cb.isChecked()
             use_fb = self.claim_dyn_fb_cb.isChecked()
             boundary_bl = load_boundary_blacklist() if use_trunc else None
+            ignore_marks = self.claim_ignore_marks_cb.isChecked()
+            if ignore_marks:
+                # 以 2框 编辑框里的标记字典为准（用户可能刚改过还没点「修改标记字典」）
+                self._sync_marks_from_editor()
             n = int(self._claim_n)
             results = run_all_checks(
                 self.doc_data['paragraphs'],
@@ -2517,6 +2574,8 @@ class MainWindow(QMainWindow):
                 use_dynamic_truncate=use_trunc,
                 use_dynamic_fallback=use_fb,
                 boundary_blacklist=boundary_bl,
+                ignore_marks=ignore_marks,
+                marks=dict(self.current_marks or {}),
             )
         except Exception as e:
             import traceback as tb
@@ -2939,6 +2998,25 @@ class MainWindow(QMainWindow):
             "先用截断得到一个干净的最长术语，再对该术语应用回退\n"
             "（从右向左缩短前缀），仅当所有前缀都没匹配上时才报错。\n"
             "这是误判最低的组合策略。"
+        )
+
+    def _on_ignore_marks_link(self, href: str):
+        QMessageBox.information(
+            self, "忽略附图标记 — 功能说明",
+            "【忽略附图标记】\n\n"
+            "常见流程是先标注、再检查。勾选后，权项检查、错别字检查、重复字词检查、\n"
+            "重复标点检查都会先把附图标记去掉，再按未标注的文本检查，结果与标注前一致：\n\n"
+            "  • 括号编号：齿圈（1）、连接件(3a)、侧板（11、12）\n"
+            "  • 标记字典里的无括号写法：齿圈1\n\n"
+            "为什么需要：标记会把文字切开——\n"
+            "  • 「齿圈座」被标成「齿圈（1）座」后，所述齿圈座 被当成 所述齿圈 检查；\n"
+            "  • 「连接杆座连接杆座」被标成「连接杆座（12）连接杆座（12）」后，\n"
+            "    重复单元连标记超过 6 字，重复字词就查不出来；\n"
+            "  • 定长字数 / 仅截断模式下，同一份权利要求标注前后的检查结果也会不同。\n\n"
+            "只影响检查，不改文档；1框 的标黄、单击定位、修改都落在带标记的原文上\n"
+            "（如「所述第二光源（1）发出」）。\n\n"
+            "四个模块的这个开关是同一个设置，勾任一处其它同步。\n"
+            "取消勾选：按带标记的原文检查。"
         )
 
     def _on_open_boundary_blacklist(self):

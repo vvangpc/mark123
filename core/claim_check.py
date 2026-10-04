@@ -24,6 +24,9 @@ claim_check.py — 权利要求书引用检查
 """
 import re
 from dataclasses import dataclass, field
+from types import SimpleNamespace
+
+from core.mark_extractor import strip_reference_marks
 
 
 # ─────────────────────────────────────────
@@ -852,13 +855,17 @@ def check_claim_ending_punctuation(claims: dict) -> list:
         last = stripped[-1]
         if last == "。":
             continue
+        # 末段（权项尾部的空段已被 raw_text 剥掉）：定位锚点取它的最后 20 字
+        lines = info.raw_text.split("\n")
+        k = min(len(lines), len(info.para_indices)) - 1
         results.append({
             "kind": "ending",
             "claim_no": no,
-            "para_idx": info.para_indices[-1] if info.para_indices else -1,
+            "para_idx": info.para_indices[k] if k >= 0 else -1,
             "context": stripped[-20:],
             "message": f"权利要求 {no} 未以「。」结尾（结尾字符：{last!r}）",
             "suggestion": "在末尾补「。」",
+            "anchor": lines[-1].rstrip()[-20:],
         })
     return results
 
@@ -871,7 +878,9 @@ def run_all_checks(paragraphs, start_idx: int, end_idx: int,
                    check_vague: bool = True,
                    use_dynamic_truncate: bool = False,
                    use_dynamic_fallback: bool = False,
-                   boundary_blacklist=None) -> list:
+                   boundary_blacklist=None,
+                   ignore_marks: bool = False,
+                   marks: dict = None) -> list:
     """
     一次性运行全部检查，返回合并后的结果列表。
 
@@ -883,7 +892,50 @@ def run_all_checks(paragraphs, start_idx: int, end_idx: int,
         vague_words:  覆盖默认 VAGUE_WORDBANK
         use_dynamic_truncate / use_dynamic_fallback / boundary_blacklist:
                       引用基础检查的两个降噪开关，详见 check_antecedent_basis
+        ignore_marks: 在去掉附图标记的文本上检查（见 strip_reference_marks），
+                      结果与未标注时一致；anchor 映射回带标记的原文，定位 / 高亮照常
+        marks:        {编号: 名称}，用于识别无括号的「齿圈1」写法
     """
+    view = paragraphs
+    stripped_maps = {}   # {段落索引: (去标记文本, 位置映射, 原文)}
+    if ignore_marks:
+        view = list(paragraphs)
+        for i in range(max(0, start_idx), min(end_idx, len(paragraphs))):
+            orig = paragraphs[i].text or ""
+            text, idx = strip_reference_marks(orig, marks)
+            if text != orig:
+                view[i] = SimpleNamespace(text=text)
+                stripped_maps[i] = (text, idx, orig)
+
+    results = _run_checks(view, start_idx, end_idx, n, ignore_set, vague_words, check_vague,
+                          use_dynamic_truncate, use_dynamic_fallback, boundary_blacklist)
+    if stripped_maps:
+        for r in results:
+            _map_anchor_to_original(r, view, end_idx, stripped_maps)
+    return results
+
+
+def _map_anchor_to_original(r: dict, view, end_idx: int, stripped_maps: dict) -> None:
+    """把去标记文本上的 anchor 换成原文里对应的那一段（含中间的标记）。
+
+    与 1框 定位同一口径：从 para_idx 所在段起向后找 anchor 首次出现。
+    """
+    anchor = r.get("anchor")
+    pid = r.get("para_idx")
+    if not anchor or not isinstance(pid, int) or pid < 0:
+        return
+    for i in range(pid, min(end_idx, len(view))):
+        pos = (view[i].text or "").find(anchor)
+        if pos < 0:
+            continue
+        if i in stripped_maps:
+            _text, idx, orig = stripped_maps[i]
+            r["anchor"] = orig[idx[pos]:idx[pos + len(anchor) - 1] + 1]
+        return
+
+
+def _run_checks(paragraphs, start_idx, end_idx, n, ignore_set, vague_words, check_vague,
+                use_dynamic_truncate, use_dynamic_fallback, boundary_blacklist) -> list:
     claims, duplicates = parse_claims_ex(paragraphs, start_idx, end_idx)
     if not claims:
         return []

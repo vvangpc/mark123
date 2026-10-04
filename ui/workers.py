@@ -16,7 +16,7 @@ from core.cleaner import (
     remove_suoshu, unify_halfwidth_punct, convert_fullwidth_to_halfwidth,
     detect_orphan_marks, detect_orphan_figures,
     check_typos_wordbank, check_duplicate_words, check_duplicate_punct,
-    merge_typo_results, apply_typo_corrections,
+    merge_typo_results, apply_typo_corrections, run_ignoring_marks,
 )
 
 
@@ -135,6 +135,13 @@ class CleanWorker(QThread):
         self.action = action
         self.kwargs = kwargs  # 额外参数按 action 传入
 
+    def _check(self, check_fn, paragraphs, sections, **kw) -> list:
+        """跑一项「先看后改」检查；kwargs 带 ignore_marks 时在去掉附图标记的文本上检查。"""
+        if self.kwargs.get("ignore_marks"):
+            return run_ignoring_marks(check_fn, paragraphs, sections,
+                                      self.kwargs.get("marks"), **kw)
+        return check_fn(paragraphs, sections, **kw)
+
     def run(self):
         try:
             paragraphs = self.doc_data['paragraphs']
@@ -201,7 +208,7 @@ class CleanWorker(QThread):
                 self.finished.emit(msg)
 
             elif self.action == "typo_check":
-                wb_results = check_typos_wordbank(paragraphs, sections)
+                wb_results = self._check(check_typos_wordbank, paragraphs, sections)
                 self.progress.emit(80)
                 merged = merge_typo_results(wb_results)
                 self.progress.emit(100)
@@ -211,14 +218,15 @@ class CleanWorker(QThread):
 
             elif self.action == "dup_check":
                 ignore_list = self.kwargs.get("ignore_list", [])
-                dup_results = check_duplicate_words(paragraphs, sections, ignore_list=ignore_list)
+                dup_results = self._check(check_duplicate_words, paragraphs, sections,
+                                          ignore_list=ignore_list)
                 self.progress.emit(100)
                 self.typo_results.emit(dup_results)
                 count = len(dup_results)
                 self.finished.emit(f"重复字词检查完成，发现 {count} 处疑似问题")
 
             elif self.action == "punct_dup_check":
-                punct_results = check_duplicate_punct(paragraphs, sections)
+                punct_results = self._check(check_duplicate_punct, paragraphs, sections)
                 self.progress.emit(100)
                 self.typo_results.emit(punct_results)
                 count = len(punct_results)

@@ -11,6 +11,7 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import tests.isolation  # noqa: F401  测试不写用户真实的设置 / 配置目录
 
 
 def test_workers_import():

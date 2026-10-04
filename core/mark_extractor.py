@@ -127,3 +127,35 @@ def parse_marks_from_display_text(text: str) -> dict[int, str]:
         {数字: 名称}
     """
     return extract_marks_from_text(text)
+
+
+# ── 忽略附图标记 ──────────────────────────────────────────
+# 部件名后的括号编号：齿圈（1）/ 连接件 (3a) / 侧板（11、12）。前一个字必须是汉字或字母，
+# 段首的「（1）」步骤号、「权利要求1(2)」这类不动。
+_PAREN_MARK_RE = re.compile(
+    r'(?<=[' + _NAME_CH[1:-1] + r'])\s*[（(]\s*\d+[A-Za-z]*'
+    r'(?:\s*[、,，\-－~～]\s*\d+[A-Za-z]*)*\s*[）)]'
+)
+
+
+def strip_reference_marks(text: str, marks: dict = None) -> tuple:
+    """去掉文本里的附图标记，返回 (去标记文本, 位置映射)。
+
+    映射 idx[k] 为去标记文本第 k 个字在原文中的下标，末尾另有一个 len(text) 哨兵。
+    除括号编号外，marks（{编号: 名称}）里「名称+编号」的无括号写法（齿圈1）也去掉编号。
+    """
+    spans = [m.span() for m in _PAREN_MARK_RE.finditer(text)]
+    for num, name in (marks or {}).items():
+        if not name:
+            continue
+        num_s = str(num)
+        for m in re.finditer(re.escape(name) + num_s + r'(?!\d)', text):
+            spans.append((m.end() - len(num_s), m.end()))
+    if not spans:
+        return text, list(range(len(text) + 1))
+    drop = [False] * len(text)
+    for a, b in spans:
+        for k in range(a, b):
+            drop[k] = True
+    keep = [k for k in range(len(text)) if not drop[k]]
+    return "".join(text[k] for k in keep), keep + [len(text)]
