@@ -10,11 +10,12 @@ ui/render/media.py — 段落内容遍历 + 图片/公式预览解析 + 缩放
   · OMML 公式（Word「插入→公式」）：**没有任何预览位图**，交给 omml.omml_to_qimage
     现场排版成透明底图片（见 ui/render/omml.py）。
   · 实在解析不出的对象 → 占位文本（【公式】/【图】）。
-文本部分之和 == para.text（只取 w:t / w:tab），保证回写/高亮偏移一致。
+文本部分之和 == core.paragraph_edit.display_text，保证回写/高亮偏移一致。
 """
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QColor, QImage, QPainter
 
+from core.paragraph_edit import token_text
 from ui.render.formula import metafile_to_qimage
 from ui.render.omml import omml_to_qimage
 
@@ -181,21 +182,25 @@ def iter_content(para, document, cache,
     """
     for child in para._p.iterchildren():
         tag = child.tag
-        if tag == f"{_W}r":
-            for rc in child.iterchildren():
-                rtag = rc.tag
-                if rtag == f"{_W}t":
-                    yield ("text", rc.text or "")
-                elif rtag == f"{_W}tab":
-                    yield ("text", "\t")
-                elif rtag in _OBJECT_TAGS:
-                    img = _image_from_element(rc, document, cache, math_color)
-                    if img is not None:
-                        yield ("image", img)
+        if tag in (f"{_W}r", f"{_W}hyperlink"):
+            runs = [child] if tag == f"{_W}r" else child.findall(f"{_W}r")
+            for run in runs:
+                for rc in run.iterchildren():
+                    rtag = rc.tag
+                    if rtag == f"{_W}t":
+                        yield ("text", rc.text or "")
+                    elif rtag in _OBJECT_TAGS:
+                        img = _image_from_element(rc, document, cache, math_color)
+                        if img is not None:
+                            yield ("image", img)
+                        else:
+                            ph = "【图】" if rtag == f"{_W}drawing" else "【公式】"
+                            yield ("placeholder", ph)
                     else:
-                        ph = "【图】" if rtag == f"{_W}drawing" else "【公式】"
-                        yield ("placeholder", ph)
-                # w:br / w:cr 忽略，避免给一个段引入额外换行
+                        # 制表符 / 软回车（显示为「↵」，不增行）等结构元素
+                        tok = token_text(rc)
+                        if tok:
+                            yield ("text", tok)
         elif tag in _OBJECT_TAGS:
             img = _image_from_element(child, document, cache, math_color)
             yield ("image", img) if img is not None else ("placeholder", "【图】")

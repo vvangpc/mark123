@@ -482,7 +482,7 @@ class WordbankDialog(QDialog):
             if path.lower().endswith(".csv"):
                 imported = self._read_csv(path)
             else:
-                with open(path, "r", encoding="utf-8") as f:
+                with open(path, "r", encoding="utf-8-sig") as f:
                     raw = json.load(f)
                 if not isinstance(raw, list):
                     raise ValueError("JSON 顶层必须为数组")

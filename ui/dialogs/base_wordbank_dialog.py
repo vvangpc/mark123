@@ -286,13 +286,13 @@ class BaseWordbankDialog(QDialog):
             return
         try:
             if path.lower().endswith(".json"):
-                with open(path, "r", encoding="utf-8") as f:
+                with open(path, "r", encoding="utf-8-sig") as f:
                     raw = json.load(f)
                 if not isinstance(raw, list):
                     raise ValueError("JSON 顶层必须为数组")
                 imported = [str(x).strip() for x in raw if str(x).strip()]
             else:
-                with open(path, "r", encoding="utf-8") as f:
+                with open(path, "r", encoding="utf-8-sig") as f:
                     imported = [line.strip() for line in f if line.strip()]
         except Exception as e:
             QMessageBox.critical(self, "导入失败", f"解析文件出错：\n{e}")

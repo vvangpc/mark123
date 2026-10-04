@@ -28,7 +28,7 @@ jobs:
       - name: Setup Python
         uses: actions/setup-python@v6
         with:
-          python-version: '3.12'
+          python-version: '3.14'   # 与 pyproject.toml requires-python / uv.lock 一致
           cache: 'pip'
 
       - name: Resolve version
@@ -53,6 +53,7 @@ jobs:
           Set-Content -Path version.py -Value $content -Encoding utf8
 
       - name: Install dependencies
+        # requirements.txt 是 uv.lock 导出的精确版本，构建可复现
         run: pip install -r requirements.txt
 
       - name: Build (PyInstaller onedir)
@@ -95,7 +96,9 @@ jobs:
             $prevEnc = [Console]::OutputEncoding
             [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new()
             try {
-              $notes = git for-each-ref "refs/tags/$tag" --format='%(contents)' 2>$null
+              # 多行输出在 PowerShell 里是数组，直接 ConvertTo-Json 会写成 JSON 数组，
+              # 更新弹窗就显示成 ['feat: …', '', …]；先拼成一个字符串
+              $notes = (git for-each-ref "refs/tags/$tag" --format='%(contents)' 2>$null) -join "`n"
               $notes = $notes.Trim()
             } finally {
               [Console]::OutputEncoding = $prevEnc

@@ -123,7 +123,7 @@ def load_user_wordbank() -> list:
     if not os.path.exists(path):
         return []
     try:
-        with open(path, "r", encoding="utf-8") as f:
+        with open(path, "r", encoding="utf-8-sig") as f:
             data = json.load(f)
         if isinstance(data, list):
             seen = set()
@@ -159,7 +159,7 @@ def load_disabled_builtin_wrongs() -> set:
     if not os.path.exists(path):
         return set()
     try:
-        with open(path, "r", encoding="utf-8") as f:
+        with open(path, "r", encoding="utf-8-sig") as f:
             data = json.load(f)
         if isinstance(data, list):
             return {str(x) for x in data if x}
@@ -181,7 +181,7 @@ def load_dup_ignore_list() -> list:
     if not os.path.exists(path):
         return []
     try:
-        with open(path, "r", encoding="utf-8") as f:
+        with open(path, "r", encoding="utf-8-sig") as f:
             data = json.load(f)
         if isinstance(data, list):
             seen = set()
@@ -228,7 +228,7 @@ def load_vague_wordbank() -> list:
         except Exception:
             return []
     try:
-        with open(path, "r", encoding="utf-8") as f:
+        with open(path, "r", encoding="utf-8-sig") as f:
             data = json.load(f)
         if isinstance(data, list):
             seen = set()
@@ -281,7 +281,7 @@ def load_boundary_blacklist() -> list:
         except Exception:
             return []
     try:
-        with open(path, "r", encoding="utf-8") as f:
+        with open(path, "r", encoding="utf-8-sig") as f:
             data = json.load(f)
         if isinstance(data, list):
             seen = set()

@@ -102,6 +102,7 @@ def test_nav_modules_and_buttons():
     assert win.punct_btn.parent() is not None
     # 三类检查共用同一张结果表
     assert set(win.CHECK_KINDS) == {"typo", "dup", "punct_dup"}
+    win._unsaved = False  # 测试不弹「未保存」确认
     win.close()
     print("[OK] 3列 8 模块 + 标点 / 孤立标 的 4列 按钮就位")
 
@@ -157,6 +158,7 @@ def test_punct_dup_end_to_end():
     assert not any("。。" in t or "，，" in t for t in texts), texts
     assert any(t.endswith("包括齿圈。") for t in texts), texts
 
+    win._unsaved = False  # 测试不弹「未保存」确认
     win.close()
     try:
         os.remove(path)
@@ -166,8 +168,9 @@ def test_punct_dup_end_to_end():
     print("[OK] 重复标点端到端：检查 → 共用结果表 → 应用写回内存")
 
 
-def test_single_fix_clears_sibling_rows():
-    """单条「修改」是整段替换 → 同段同词的其它行必须一并消失（修好的 B7）。"""
+def test_single_fix_only_touches_its_occurrence():
+    """单条「修改」只改这一处：同段同词的另一行保留、occurrence 按改后文本重算，
+    随后再点它也能改对位置（旧实现整段全改，忽略第 1 处、只改第 2 处会两处都改）。"""
     import tempfile
     from PyQt6.QtWidgets import QApplication
     from ui.main_window import MainWindow
@@ -190,25 +193,31 @@ def test_single_fix_clears_sibling_rows():
     w.typo_results.connect(got.append)
     w.run()
     results = [r for r in got[0] if r["wrong"] == "。。"]
-    assert len(results) == 2, f"同段应报 2 处，实际 {len(results)}"
+    assert [r["occurrence"] for r in results] == [1, 2], results
 
     win._current_check_kind = "punct_dup"
     win.punct_dup_data = results
     win._render_table_from_data(results)
+    # 只改第 2 处
+    win._apply_single_correction(1)
+    text = next(p.text for p in win.doc_data["paragraphs"] if "夹具" in p.text)
+    assert text == "本实用新型涉及夹具。。其结构简单。成本低。", text
+    assert len(win.punct_dup_data) == 1 and win.punct_dup_data[0]["occurrence"] == 1
+    assert win.history_entries and "1 处" in win.history_entries[-1]["summary"], win.history_entries
+    # 剩下那条仍能准确命中第 1 处
     win._apply_single_correction(0)
+    text = next(p.text for p in win.doc_data["paragraphs"] if "夹具" in p.text)
+    assert text == "本实用新型涉及夹具。其结构简单。成本低。", text
+    assert win.punct_dup_data == [] and win.typo_table.rowCount() == 0
 
-    assert win.punct_dup_data == [], f"兄弟行应一并移除，剩余 {win.punct_dup_data}"
-    assert win.typo_table.rowCount() == 0
-    assert win.history_entries and "2 处" in win.history_entries[-1]["summary"],         win.history_entries
-    assert not any("。。" in p.text for p in win.doc_data["paragraphs"])
-
+    win._unsaved = False  # 测试不弹「未保存」确认
     win.close()
     try:
         os.remove(path)
         os.rmdir(tmpdir)
     except OSError:
         pass
-    print("[OK] 单条修改后同段同词的兄弟行一并清理，历史记为实际处数")
+    print("[OK] 单条修改只改对应的那一处，同段其余行重算后仍可定位")
 
 
 def test_execute_buttons_switch_back_to_their_page():
@@ -264,6 +273,7 @@ def test_execute_buttons_switch_back_to_their_page():
     # 连续标点交给「重复标点检查」逐条确认，标点统一不再顺手改掉
     assert any("。。" in p.text for p in win.doc_data["paragraphs"]),         "「标点统一」不应再自动修正连续重复标点"
 
+    win._unsaved = False  # 测试不弹「未保存」确认
     win.close()
     try:
         os.remove(path)
@@ -287,6 +297,7 @@ def test_replace_page_preview():
     assert "「实用新型」" in win.replace_preview_label.text()
     win.replace_to_edit.setText("")
     assert "删除" in win.replace_preview_label.text(), win.replace_preview_label.text()
+    win._unsaved = False  # 测试不弹「未保存」确认
     win.close()
     print("[OK] 全文替换实时预览（含留空＝删除）")
 
@@ -296,7 +307,7 @@ if __name__ == "__main__":
     test_occurrence_is_one_based()
     test_nav_modules_and_buttons()
     test_punct_dup_end_to_end()
-    test_single_fix_clears_sibling_rows()
+    test_single_fix_only_touches_its_occurrence()
     test_execute_buttons_switch_back_to_their_page()
     test_replace_page_preview()
     print("\nAll punct-dup tests passed.")

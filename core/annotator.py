@@ -35,15 +35,15 @@ def _build_xml_char_map(paragraph):
 
 
 def annotate_paragraph_safe(paragraph, replace_dict: dict[str, str],
-                            preamble_regex: re.Pattern = None) -> bool:
+                            protected_len_fn=None) -> bool:
     """
     安全版本的段落标注函数，直接操作 <w:t> 以保留所有非文本子节点。
 
     参数:
         paragraph: python-docx Paragraph对象
         replace_dict: {原文: 替换后文本}
-        preamble_regex: 若提供且在段落内命中，则其 end() 之前的匹配视为前言部分
-            （如权利要求"其特征在于"之前的"一种X的装置"），不进行替换。
+        protected_len_fn: 若提供，以段落文本为参数返回开头"受保护"的字数，
+            该范围内的匹配不替换（如权利要求的主题名称「一种X的装置」）。
 
     返回:
         是否发生了替换
@@ -56,12 +56,7 @@ def annotate_paragraph_safe(paragraph, replace_dict: dict[str, str],
     if not full_text:
         return False
 
-    # 计算"前言保护区"长度：权利要求书首段中"其特征在于"之前的专利名称部分
-    protected_prefix_len = 0
-    if preamble_regex is not None:
-        m_pre = preamble_regex.search(full_text)
-        if m_pre:
-            protected_prefix_len = m_pre.end()
+    protected_prefix_len = protected_len_fn(full_text) if protected_len_fn else 0
 
     # 步骤2: 排序key（长的优先）
     sorted_keys = sorted(replace_dict.keys(), key=len, reverse=True)
@@ -156,9 +151,23 @@ def build_implementation_remove_dict(marks: dict[int, str]) -> dict[str, str]:
     return remove_dict
 
 
-# 权利要求书前言识别：命中后其 end() 之前视为"专利名称"部分，不参与标注
-# 兼容"其特征在于"与"其特征是"，允许后跟中/英文标点
+# 权利要求的主题名称保护：「一种X的装置，包括齿圈和夹指，其特征在于…」里
+# 只有主题名称「一种X的装置」（到第一个逗号 / 冒号为止）不参与标注；前序部分里的
+# 齿圈、夹指是技术特征，照常标注。没有逗号时退回保护到「其特征在于」为止。
 _CLAIMS_PREAMBLE_RE = re.compile(r'其特征(?:在于|是)[，：:,]?')
+_CLAIM_START_RE = re.compile(r'^\s*\d+\s*[.．、]')
+_SUBJECT_END_RE = re.compile(r'[，,：:；;]')
+
+
+def _claims_protected_len(full_text: str) -> int:
+    """权项首段开头主题名称的长度（续行段返回 0）。"""
+    pre = _CLAIMS_PREAMBLE_RE.search(full_text)
+    if not (_CLAIM_START_RE.match(full_text) or pre):
+        return 0
+    m = _SUBJECT_END_RE.search(full_text)
+    if m and (pre is None or m.start() < pre.start()):
+        return m.start()
+    return pre.end() if pre else 0
 
 
 # ---------------- 检查 ----------------
@@ -185,9 +194,8 @@ def annotate_section(paragraphs, section, replace_dict: dict[str, str],
                      mode: str = "claims") -> int:
     """对指定章节的所有段落执行替换操作（增加标记）"""
     replaced_count = 0
-    # 权利要求书中首段（独立权项）常含"一种X，其特征在于，..."前言，
-    # X 里若包含已标注部件名，应避免被错误标注
-    preamble_re = _CLAIMS_PREAMBLE_RE if mode == "claims" else None
+    # 权项首段的主题名称「一种X…」里若含部件名，不应被标注
+    protect = _claims_protected_len if mode == "claims" else None
     for i in range(section.start_idx, section.end_idx):
         para = paragraphs[i]
         text = para.text.strip()
@@ -198,7 +206,7 @@ def annotate_section(paragraphs, section, replace_dict: dict[str, str],
             if _is_paragraph_already_annotated(text, marks, mode):
                 continue
 
-        if annotate_paragraph_safe(para, replace_dict, preamble_regex=preamble_re):
+        if annotate_paragraph_safe(para, replace_dict, protected_len_fn=protect):
             replaced_count += 1
     return replaced_count
 
@@ -245,23 +253,3 @@ def smart_remove_section(paragraphs, section, marks: dict[int, str], mode: str =
     """智能删除标注"""
     remove_dict = build_claims_remove_dict(marks) if mode == "claims" else build_implementation_remove_dict(marks)
     return remove_section_marks(paragraphs, section, remove_dict)
-
-
-def update_mark_paragraph_text(mark_para, new_text: str) -> bool:
-    """
-    将附图标记段落的文本替换为 new_text（保留段落格式，丢弃多余 run）。
-    用于用户编辑词典后同步回文档段落。
-    返回是否修改成功。
-    """
-    if mark_para is None:
-        return False
-    runs = list(mark_para.runs)
-    if not runs:
-        mark_para.add_run(new_text)
-        return True
-    # 第一个 run 写入新内容
-    runs[0].text = new_text
-    # 后续 run 清空（保留 run 节点以保留任何指向它们的引用）
-    for r in runs[1:]:
-        r.text = ""
-    return True

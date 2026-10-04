@@ -1,12 +1,40 @@
-# requirements.txt — 仅供 GitHub Actions 构建使用
-# 本地开发用 pyproject.toml + uv 即可；这里只把打包需要的运行时依赖固定下来，
-# 留弹性范围（>=），避免某个补丁版被 yank 导致 CI 红
-# 下界与 pyproject.toml 保持一致
-PyQt6>=6.11
-python-docx>=1.2
-lxml>=5.0
-pyinstaller>=6.19
-# Pillow 只在打包时用：PyInstaller 用它把 1024x1024 的 app_icon.png 缩到 splash 限制 760x480
-# 通过 build.py 里的 --exclude-module PIL，运行时 exe 不带 Pillow，不影响体积
-Pillow>=10.0
+# requirements.txt — 供 GitHub Actions 构建使用，由 uv.lock 导出的精确版本（可复现构建）。
+# 本地开发用 uv（pyproject.toml + uv.lock）。改依赖后重新生成：
+#   uv lock && uv export --frozen --group build --no-hashes --no-emit-project --no-header -o requirements.txt
+# （导出后补回这段注释）
 
+altgraph==0.17.5
+    # via
+    #   macholib
+    #   pyinstaller
+lxml==6.0.2
+    # via python-docx
+macholib==1.16.4 ; sys_platform == 'darwin'
+    # via pyinstaller
+packaging==26.0
+    # via
+    #   pyinstaller
+    #   pyinstaller-hooks-contrib
+pefile==2024.8.26 ; sys_platform == 'win32'
+    # via pyinstaller
+pillow==12.3.0
+pyinstaller==6.19.0
+    # via patent-marker
+pyinstaller-hooks-contrib==2026.4
+    # via pyinstaller
+pyqt6==6.11.0
+    # via patent-marker
+pyqt6-qt6==6.11.0
+    # via pyqt6
+pyqt6-sip==13.11.1
+    # via pyqt6
+python-docx==1.2.0
+    # via patent-marker
+pywin32-ctypes==0.2.3 ; sys_platform == 'win32'
+    # via pyinstaller
+setuptools==82.0.1
+    # via
+    #   pyinstaller
+    #   pyinstaller-hooks-contrib
+typing-extensions==4.15.0
+    # via python-docx

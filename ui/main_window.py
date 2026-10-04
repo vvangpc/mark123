@@ -4,6 +4,7 @@ main_window.py — PyQt6 主窗口
 专利附图标记桌面软件的GUI界面。
 """
 import os
+import re
 import traceback
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QPushButton,
@@ -786,6 +787,8 @@ class MainWindow(QMainWindow):
         if not src:
             self._show_toast("请先在 2框 填写「替换前」内容", "warning")
             return
+        if not self._commit_content_edits():
+            return
         from core.annotator import annotate_paragraph_safe
         n = 0
         for p in self.doc_data["paragraphs"]:
@@ -1138,6 +1141,7 @@ class MainWindow(QMainWindow):
     def _on_content_edited(self):
         """1框 专利内容被结构化编辑回写到内存后：失效全部结果表类检查的缓存，
         下次检查时按编辑后的最新内存重新扫描（权项检查每次都读内存，无需额外处理）。"""
+        self._unsaved = True
         self._invalidate_check_cache()
 
     def _on_content_confirmed(self, count: int):
@@ -1251,6 +1255,14 @@ class MainWindow(QMainWindow):
 
     def _load_document(self, file_path: str):
         """加载并解析docx文档"""
+        if self._is_busy():
+            self._show_toast("正在处理中，请稍候再切换文件", "info")
+            return
+        if not self._confirm_discard_changes("打开新文档"):
+            return
+        # 加载中途会 processEvents，期间再拖入 / 转交一个文件会嵌套加载，
+        # 界面显示 A、内存与输出路径却是 B —— 用 _loading 纳入 _is_busy 拦住
+        self._loading = True
         self.status_bar.showMessage(f"正在解析文档: {os.path.basename(file_path)} ...")
         self.progress_bar.setVisible(True)
         self.progress_bar.setValue(0)
@@ -1343,6 +1355,7 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "解析失败", f"无法解析该 docx 文件:\n\n{str(e)}")
 
         finally:
+            self._loading = False
             QTimer.singleShot(1500, lambda: self.progress_bar.setVisible(False))
 
     # ─────────────── 单实例：接收远端转交的文件 ───────────────
@@ -1444,6 +1457,8 @@ class MainWindow(QMainWindow):
         if self._is_busy():
             self._show_toast("正在处理中，请等待当前操作完成", "warning")
             return
+        if not self._commit_content_edits():
+            return
         self._sync_marks_from_editor()
 
         action_name = "标注" if action == "add" else "删除标记"
@@ -1500,7 +1515,8 @@ class MainWindow(QMainWindow):
             self._show_toast("正在处理中，请等待当前操作完成后再生成文件", "warning")
             return
         # 落盘前先把 1框 里待回写的结构化编辑写入内存
-        self.content_area.flush_all()
+        if not self._commit_content_edits():
+            return
         if not self.history_entries:
             reply = QMessageBox.question(
                 self, "未检测到修改",
@@ -1583,6 +1599,7 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "保存失败", f"无法保存文件：\n{e}")
             return
 
+        self._unsaved = False
         self._log("=" * 50)
         self._log(f"💾 文件已生成: {output_path}")
         self.status_bar.showMessage(f"文件已生成 — {os.path.basename(output_path)}")
@@ -1607,6 +1624,7 @@ class MainWindow(QMainWindow):
         ts = datetime.now().strftime("%H:%M:%S")
         entry = {"time": ts, "summary": summary, "detail": detail}
         self.history_entries.append(entry)
+        self._unsaved = True
         self._render_history()
         # 文件生成按钮：有了历史就启用
         self.generate_btn.setEnabled(True)
@@ -1631,6 +1649,7 @@ class MainWindow(QMainWindow):
 
     def _clear_history(self):
         self.history_entries = []
+        self._unsaved = False
         self.content_area.history_edit.clear()
         self.generate_btn.setEnabled(False)
 
@@ -1646,30 +1665,46 @@ class MainWindow(QMainWindow):
             self._show_toast("标记字典为空！", "error")
             return
 
+        if self._is_busy():
+            self._show_toast("正在处理中，请稍候", "warning")
+            return
         new_marks = parse_marks_from_display_text(text)
         self.current_marks = new_marks
         self.mark_count_label.setText(f"共 {len(new_marks)} 个标记")
 
-        # 写回 mark 段落
-        from core.annotator import update_mark_paragraph_text
-        mark_para = self.doc_data.get('mark_para')
-        if mark_para is None:
+        mark_paras = list(self.doc_data.get('mark_paras') or [])
+        if not mark_paras and self.doc_data.get('mark_para') is not None:
+            mark_paras = [self.doc_data['mark_para']]
+        if not mark_paras:
             self._show_toast("未找到附图标记段落，无法同步到文档", "warning")
             self._log("⚠️ 文档中没有附图标记段落，仅更新内存词典")
             return
+        # 1框 里未确认的编辑先落内存——下面会按内存整页重载 1框
+        if not self._commit_content_edits():
+            return
 
+        from core.paragraph_edit import display_text, set_paragraph_text
         new_text_for_para = marks_to_display_text(new_marks)
+        # 词典整体写进第一段，保留其「附图标记：」前缀；其余标记段清空，
+        # 否则分段书写的标记会在文档里出现两遍
+        first_text = display_text(mark_paras[0])
+        m = re.match(r'^.*?附图标记\s*[:：]?\s*', first_text)
+        prefix = m.group(0) if m else ""
         try:
-            update_mark_paragraph_text(mark_para, new_text_for_para)
+            set_paragraph_text(mark_paras[0], prefix + new_text_for_para)
+            for p in mark_paras[1:]:
+                set_paragraph_text(p, "")
         except Exception as e:
             self._show_toast(f"同步失败：{e}", "error")
             return
 
+        self.content_area.load(self.doc_data)
+        self._invalidate_check_cache()
         self._log(f"✅ 已重新确认标记并写回内存：共 {len(new_marks)} 项")
-        self._add_history(
-            f"重新确认标记 ({len(new_marks)} 项)",
-            f"已将编辑框中的词典写回附图标记段落：\n{new_text_for_para}",
-        )
+        detail = f"已将编辑框中的词典写回附图标记段落：\n{new_text_for_para}"
+        if len(mark_paras) > 1:
+            detail += f"\n（原分 {len(mark_paras)} 段书写，已合并到第一段，其余段清空）"
+        self._add_history(f"重新确认标记 ({len(new_marks)} 项)", detail)
         self._show_toast("标记已同步到内存", "success")
 
     # ===== 辅助方法 =====
@@ -1720,8 +1755,38 @@ class MainWindow(QMainWindow):
                 return "已标注"
         return "已标注"
 
+    def _commit_content_edits(self) -> bool:
+        """把 1框 未确认的编辑写回内存；有标签页因增删行被拒时提示并返回 False。
+
+        所有「改内存后整页重载 1框」的操作都要先调它，否则重载会把用户还没点
+        「确认修改」的编辑静默丢掉。
+        """
+        _changed, rejected = self.content_area.flush_all()
+        if rejected:
+            self._show_toast("1框 有增删行的编辑无法写回，请先撤销增删行再操作", "warning")
+            return False
+        return True
+
+    def _has_unsaved_changes(self) -> bool:
+        """内存里有尚未「文件生成」落盘的修改（含 1框 未确认的编辑）。"""
+        return bool(getattr(self, "_unsaved", False)) or self.content_area.has_pending_edits()
+
+    def _confirm_discard_changes(self, action: str) -> bool:
+        """有未生成文件的修改时询问是否放弃；无修改直接放行。"""
+        if not self.doc_data or not self._has_unsaved_changes():
+            return True
+        reply = QMessageBox.question(
+            self, "有未保存的修改",
+            f"当前文档有尚未「文件生成」的修改，{action}后这些修改将丢失。\n\n确定继续吗？",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        return reply == QMessageBox.StandardButton.Yes
+
     def _is_busy(self) -> bool:
-        """是否有后台 worker 正在读写内存中的文档树"""
+        """是否有后台 worker 正在读写内存中的文档树（或正在加载文档）"""
+        if getattr(self, "_loading", False):
+            return True
         w = getattr(self, "worker", None)
         if w is not None and w.isRunning():
             return True
@@ -1758,6 +1823,8 @@ class MainWindow(QMainWindow):
         self.spec_abs_btn.setEnabled(enabled and self._spec_abs_ok)
         # generate_btn 仅在有历史时启用
         self.generate_btn.setEnabled(enabled and bool(self.history_entries))
+        # 1框 编辑 / 确认修改：后台线程写文档树期间锁住，避免两个线程同时改同一棵 lxml 树
+        self.content_area.set_locked(not enabled)
 
     def _set_buttons_enabled(self, enabled: bool):
         """设置标注操作按钮状态（与清洗组互锁，见 _set_doc_ops_enabled）"""
@@ -1838,6 +1905,9 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event):
         """窗口关闭时持久化配置；先等运行中的后台线程退出，
         避免 QThread 随窗口销毁时崩溃（Destroyed while thread is still running）"""
+        if not self._confirm_discard_changes("关闭窗口"):
+            event.ignore()
+            return
         for w in (getattr(self, "worker", None), getattr(self, "clean_worker", None)):
             if w is not None and w.isRunning():
                 w.wait(5000)
@@ -1961,7 +2031,8 @@ class MainWindow(QMainWindow):
             self._show_toast("正在处理中，请等待当前操作完成", "warning")
             return
         # 先把 1框 里待回写的结构化编辑落到内存，确保检查基于最新内容
-        self.content_area.flush_all()
+        if not self._commit_content_edits():
+            return
         self._set_clean_buttons_enabled(False)
         self.progress_bar.setVisible(True)
         self.progress_bar.setValue(0)
@@ -2099,6 +2170,7 @@ class MainWindow(QMainWindow):
                 "para_idx": item["para_idx"],
                 "wrong": wrong,
                 "confirmed_fix": confirmed,
+                "occurrence": item.get("occurrence"),
             })
 
         if not corrections:
@@ -2147,6 +2219,9 @@ class MainWindow(QMainWindow):
         """「修改」：把单条结果的「修改后」写回内存（不影响其它行）。"""
         if not self.doc_data or self._current_check_kind is None:
             return
+        if self._is_busy():
+            self._show_toast("正在处理中，请稍候", "warning")
+            return
         # 先把表格里的即时编辑回写到缓存，保证取到用户最新输入的「修改后」
         self._snapshot_table_to_active_cache()
         data = self._active_cache_list()
@@ -2158,39 +2233,48 @@ class MainWindow(QMainWindow):
         if not (wrong and confirmed) or confirmed == wrong:
             self._show_toast("该条没有可应用的修改（「修改后」为空或与原词相同）", "warning")
             return
+        if not self._commit_content_edits():
+            return
 
-        from core.cleaner import apply_typo_corrections
+        from core.cleaner import apply_typo_corrections, nth_occurrence, remap_after_edit
+        from core.paragraph_edit import display_text
+        pid = item["para_idx"]
+        occ = int(item.get("occurrence", 1) or 1)
+        para = self.doc_data["paragraphs"][pid]
+        old_text = display_text(para)
+        pos = nth_occurrence(old_text, wrong, occ)
         count = apply_typo_corrections(
             self.doc_data["paragraphs"],
-            [{"para_idx": item["para_idx"], "wrong": wrong, "confirmed_fix": confirmed}],
+            [{"para_idx": pid, "wrong": wrong, "confirmed_fix": confirmed, "occurrence": occ}],
         )
-        if not count:
+        if not count or pos < 0:
             self._show_toast("未找到可替换的文本，可能内容已变动", "warning")
             return
 
-        # apply_typo_corrections 是「整段替换该词的全部出现」，而结果表是逐处一行：
-        # 同段同词的其它行此刻已经一并被改掉了，留在表里再点只会提示"未找到"。
-        # 一并移除，并按实际处理的处数记历史。
-        siblings = [
-            j for j, it in enumerate(data)
-            if it.get("para_idx") == item["para_idx"] and it.get("wrong") == wrong
-        ]
-        if row not in siblings:
-            siblings.append(row)
-        label_prefix = self.CHECK_KINDS[self._current_check_kind][2]
-        self._add_history(
-            f"{label_prefix}（{len(siblings)} 处）", f"{wrong} → {confirmed}"
-        )
-        for j in sorted(siblings, reverse=True):
+        # 只改了这一处：同段其余行的 occurrence 按改后文本重算，与本处交叠的行已失效、移除
+        new_text = display_text(para)
+        others = [(j, it) for j, it in enumerate(data)
+                  if j != row and it.get("para_idx") == pid and it.get("wrong")]
+        remapped = remap_after_edit(old_text, new_text, pos, len(wrong), len(confirmed),
+                                    [it for _, it in others])
+        drop = [row]
+        for (j, _), new_it in zip(others, remapped):
+            if new_it is None:
+                drop.append(j)
+            else:
+                data[j] = new_it
+        for j in sorted(drop, reverse=True):
             data.pop(j)
+
+        label_prefix = self.CHECK_KINDS[self._current_check_kind][2]
+        self._add_history(f"{label_prefix}（1 处）", f"{wrong} → {confirmed}")
         self._render_table_from_data(data)
         # 内存已变动 → 刷新 1框，并让其余几类检查的缓存失效（它们的结果已过期）
         self.content_area.load(self.doc_data)
         self._invalidate_check_cache(
             *[k for k in self.CHECK_KINDS if k != self._current_check_kind]
         )
-        n_hint = "" if len(siblings) == 1 else f"（同段 {len(siblings)} 处）"
-        self._show_toast(f"已修改：{wrong} → {confirmed}{n_hint}", "success")
+        self._show_toast(f"已修改：{wrong} → {confirmed}", "success")
 
     def _active_cache_list(self) -> list:
         """返回当前检查类型对应的缓存列表（就地可改：调用方会 pop 掉已处理的行）。"""
@@ -2293,7 +2377,7 @@ class MainWindow(QMainWindow):
 
         # 应用错别字 / 重复字修正后：修正已写入内存，作废两类检查缓存，使下次检查
         # 重新扫描已修正的内容，避免再次报出已修复的问题。
-        if action == "typo_apply":
+        if action in ("typo_apply", "suoshu", "punct"):
             self._invalidate_check_cache()
 
         # 改动文档内容的清洗操作（删"所述"/标点/应用错别字修正）已写入内存
@@ -2407,8 +2491,12 @@ class MainWindow(QMainWindow):
             self._show_toast("请先加载包含权利要求书的文档", "warning")
             return
 
+        if self._is_busy():
+            self._show_toast("正在处理中，请稍候", "warning")
+            return
         # 先把 1框 权利要求书的结构化编辑落到内存，确保检查基于最新内容
-        self.content_area.flush_all()
+        if not self._commit_content_edits():
+            return
 
         try:
             from core.claim_check import run_all_checks
@@ -2695,8 +2783,12 @@ class MainWindow(QMainWindow):
         if not self.doc_data:
             self._show_toast("请先打开文档！", "error")
             return
+        if self._is_busy():
+            self._show_toast("正在处理中，请稍候", "warning")
+            return
         # 落 1框 结构化编辑到内存，确保检查基于最新内容
-        self.content_area.flush_all()
+        if not self._commit_content_edits():
+            return
         try:
             from core.spec_check import check_embodiment_numbering, check_abstract_length
             paras = self.doc_data["paragraphs"]

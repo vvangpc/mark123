@@ -1,7 +1,7 @@
 [project]
 name = "patent-marker"
 # 仅作包元数据展示；应用运行时版本以 version.py 的 __version__ 为准（CI 只改写 version.py）
-version = "4.1.0"
+version = "4.3.0"
 description = "专利标记助手 — 专利 docx 文档标注与检查桌面工具（PyQt6）"
 readme = "README.md"
 requires-python = ">=3.14"
@@ -9,4 +9,10 @@ dependencies = [
     "pyinstaller>=6.19.0",
     "pyqt6>=6.11.0",
     "python-docx>=1.2.0",
+]
+
+[dependency-groups]
+# 只在打包时用：PyInstaller 借 Pillow 把 1024x1024 的 app_icon.png 缩到 splash 尺寸
+build = [
+    "pillow>=10.0",
 ]

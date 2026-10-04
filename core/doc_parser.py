@@ -285,6 +285,41 @@ def _infer_abstract_boundary(paragraphs, sections: dict, title_positions: list):
     title_positions.sort(key=lambda x: x[0])
 
 
+# 「摘要：正文」/「说明书摘要：正文」同段写法（冒号后还有正文）
+_ABSTRACT_INLINE_RE = re.compile(r'^\s*(?:说\s*明\s*书\s*)?摘\s*要\s*[:：]\s*\S')
+
+# 附图标记条目：「1-齿圈」「2、夹指」「3．转盘」。
+# 编号前不能是「图」或数字，名称不能以「图」开头——否则附图说明里的
+# 「图2、图3分别为左视图」会被当成标记段，解析出 {2: '图'}。
+_MARK_ENTRY_RE = re.compile(
+    r'(?<![图\d])(?<!图\s)[1-9]\d*\s*[-—–、.．,:：\s]\s*(?!图)[\u4e00-\u9fa5a-zA-Z]'
+)
+
+
+def _find_mark_paragraphs(paragraphs, start: int, end: int) -> list:
+    """在 [start, end) 里找附图标记段，返回段落索引列表。
+
+    优先以含「附图标记」的段为起点；没有时，才把一段里有 ≥2 个标记条目的段当起点。
+    起点之后连续的条目段（每段 ≥1 个条目）一并收入，遇空段或其它正文即止。
+    """
+    def _entries(text: str) -> int:
+        return len(_MARK_ENTRY_RE.findall(text))
+
+    texts = [(i, paragraphs[i].text.strip()) for i in range(start, end)]
+    first = next((i for i, t in texts if "附图标记" in t), None)
+    if first is None:
+        first = next((i for i, t in texts if _entries(t) >= 2), None)
+    if first is None:
+        return []
+    out = [first]
+    for i in range(first + 1, end):
+        t = paragraphs[i].text.strip()
+        if not t or not _entries(t):
+            break
+        out.append(i)
+    return out
+
+
 def parse_document(doc_path: str) -> dict:
     """
     解析docx文档，识别五书各章节的段落范围。
@@ -344,7 +379,11 @@ def parse_document(doc_path: str) -> dict:
             next_pos = len(paragraphs)
 
         # 对于权利要求书，起始段落就是内容段落（可能没有单独标题）
-        if name == "权利要求书":
+        if name == "说明书摘要" and _ABSTRACT_INLINE_RE.match(paragraphs[pos].text):
+            # 「摘要：本发明公开了…」标题与正文同段 → 正文从本段算起，
+            # 否则摘要区间为空（字数检查直接判通过、1框 摘要页空白）
+            content_start = pos
+        elif name == "权利要求书":
             # 检查当前段落是否是"权利要求书"标题（容忍内部空格与尾部冒号，
             # 如「权 利 要 求 书」「权利要求书：」）
             title_text = re.sub(r'\s+', '', paragraphs[pos].text).rstrip("：:")
@@ -381,23 +420,13 @@ def parse_document(doc_path: str) -> dict:
     mark_para_idx = None
     mark_paras = []  # 所有附图标记段落
 
-    _MARK_ENTRY_RE = re.compile(r'[1-9]\d*\s*[-\-—–、.．,:：\s]\s*[\u4e00-\u9fa5a-zA-Z]')
-
     if "附图说明" in sections:
         sec = sections["附图说明"]
-        for i in range(sec.start_idx, sec.end_idx):
-            text = paragraphs[i].text.strip()
-            if not text:
-                if mark_paras:
-                    break  # 空段落表示标记区域结束
-                continue
-            if "附图标记" in text or _MARK_ENTRY_RE.search(text):
-                if mark_para is None:
-                    mark_para = paragraphs[i]
-                    mark_para_idx = i
-                mark_paras.append(paragraphs[i])
-            elif mark_paras:
-                break  # 遇到非标记段落，标记区域结束
+        found = _find_mark_paragraphs(paragraphs, sec.start_idx, sec.end_idx)
+        if found:
+            mark_para_idx = found[0]
+            mark_para = paragraphs[mark_para_idx]
+            mark_paras = [paragraphs[i] for i in found]
 
     # 如果在附图说明中没找到，全文搜索
     if mark_para is None:

@@ -41,7 +41,7 @@ from PyQt6.QtWidgets import (
 from ui.render.media import has_renderable_object, iter_content, scale_to_width
 
 from core.doc_parser import has_readonly_object
-from core.paragraph_edit import set_paragraph_text
+from core.paragraph_edit import display_text, set_paragraph_text
 
 # 「说明书」合集所含子章节（按文档常规顺序）
 _SPEC_ORDER = ["技术领域", "背景技术", "发明内容", "附图说明", "具体实施方式"]
@@ -89,6 +89,7 @@ class ContentArea(QWidget):
         self._para_maps: list[list[int]] = [[] for _ in self.TAB_NAMES]
         self._suppress = False           # 程序性填充时抑制 textChanged
         self._dirty: set[int] = set()    # 待回写的标签页索引
+        self._locked = False             # 后台线程改写文档树期间锁住编辑
         # 错别字/重复字内联高亮：每个标签页一组 (line, offset, length)；当前点击项单独记
         self._issue_ranges: list[list[tuple]] = [[] for _ in self.TAB_NAMES]
         self._active_issue: tuple | None = None   # (tab, line, offset, length)
@@ -180,10 +181,10 @@ class ContentArea(QWidget):
             self._build_rich(edit, pmap, paras, document)
             self._rich_tabs.add(i)
         else:
-            edit.setPlainText("\n".join(paras[idx].text for idx in pmap))
+            edit.setPlainText("\n".join(display_text(paras[idx]) for idx in pmap))
             self._rich_tabs.discard(i)
         self._suppress = False
-        edit.setReadOnly(not pmap)   # 仅在该标签页有内容时开放编辑
+        edit.setReadOnly(self._locked or not pmap)   # 仅在该标签页有内容时开放编辑
 
     def _build_rich(self, edit: QTextEdit, pmap: list, paras: list, document) -> None:
         """逐段构建富文本：每段一个 block，段内按文档顺序插文本/内联图片（不增行）。"""
@@ -229,7 +230,9 @@ class ContentArea(QWidget):
             return
         for i in list(self._rich_tabs):
             pmap = self._para_maps[i]
-            if not pmap:
+            # 有未确认编辑的页不重建：重建按内存内容重来，会把编辑静默丢掉。
+            # 这一页的图片暂不随宽度缩放，确认修改后下次缩放即恢复。
+            if not pmap or i in self._dirty:
                 continue
             self._suppress = True
             self._build_rich(self._edits[i], pmap, paras, document)
@@ -249,10 +252,23 @@ class ContentArea(QWidget):
 
     def _update_confirm_enabled(self):
         if hasattr(self, "_confirm_btn"):
-            self._confirm_btn.setEnabled(bool(self._dirty))
+            self._confirm_btn.setEnabled(bool(self._dirty) and not self._locked)
+
+    def has_pending_edits(self) -> bool:
+        """是否有尚未「确认修改」的编辑。"""
+        return bool(self._dirty)
+
+    def set_locked(self, locked: bool) -> None:
+        """后台线程改写文档树期间锁住编辑与「确认修改」，结束后按内容恢复。"""
+        self._locked = locked
+        for i, e in enumerate(self._edits):
+            e.setReadOnly(locked or not self._para_maps[i])
+        self._update_confirm_enabled()
 
     def _on_confirm_clicked(self):
         """「✓ 确认修改」：把所有未保存编辑写回内存。"""
+        if self._locked:
+            return
         if not self._dirty:
             self.editConfirmed.emit(0)
             return
@@ -301,20 +317,28 @@ class ContentArea(QWidget):
 
         changed = 0
         readonly_touched = False
+        out_of_sync = False
         for line, idx in zip(lines, pmap):
             para = paras[idx]
             if has_readonly_object(para):
                 # 含图片/公式段只读：不回写；若被改动则提示
                 # （内联对象在 QTextEdit 里是 U+FFFC 占位符，比较时先剔除，免误报）
-                if line.replace("￼", "") != para.text:
+                if line.replace("￼", "") != display_text(para):
                     readonly_touched = True
                 continue
             if set_paragraph_text(para, line):
                 changed += 1
+                if display_text(para) != line:
+                    out_of_sync = True
 
         self._dirty.discard(tab)
+        if readonly_touched or out_of_sync:
+            # 只读段的改动 / 新敲入的制表符、「↵」都没写进内存 → 按内存重刷，所见即所存
+            self._fill_tab(tab, pmap, paras, self._doc_data.get("document"))
         if readonly_touched:
             self.editWarning.emit("含图片/公式的段落为只读，对其的改动不会被保存。")
+        if out_of_sync:
+            self.editWarning.emit("制表符和软回车（↵）只能保留或删除，不能在此新增，已忽略。")
         if changed:
             self.contentEdited.emit()
         return changed, True

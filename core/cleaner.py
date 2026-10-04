@@ -2,11 +2,12 @@
 """
 cleaner.py — 文本清洗功能模块
 提供：删除"所述"、半角→全角标点统一、孤立附图标记检测、错别字检查与应用。
-所有文本写入操作复用 annotator.annotate_paragraph_safe()，保证格式安全。
+文本写入走 annotator.annotate_paragraph_safe() 或 core.paragraph_edit（只动 w:t），保证格式安全。
 """
 import re
 from functools import lru_cache
 from core.annotator import annotate_paragraph_safe, _build_xml_char_map
+from core.paragraph_edit import display_text, replace_chars, set_paragraph_text
 
 # 权利要求序号行头（如 "1." / "2、" / "3．"）；与 claim_check._CLAIM_HEAD_RE 语义一致
 _CLAIM_HEAD_RE = re.compile(r'^\s*(\d+)\s*[\.\．\、]')
@@ -90,22 +91,57 @@ _FULLWIDTH_MAP = {
     "’": "'",
 }
 
-# 匹配：中文字符 + 半角标点（可选空格）或 半角标点 + 中文字符
-_CJK = r'[\u4e00-\u9fff\u3400-\u4dbf\uff00-\uffef]'
+# "中文上下文"字符：汉字 + 中文标点 + 全角标点符号。
+# 刻意不含全角数字 / 全角字母（FF10-19、FF21-3A、FF41-5A）：「１.」是序号，
+# 「Ａ,Ｂ」是字母列举，都不该被当成中文语境改掉。
+_CJK = (r'[\u4e00-\u9fff\u3400-\u4dbf\u3000-\u303f'
+        r'\uff01-\uff0f\uff1a-\uff20\uff3b-\uff40\uff5b-\uff65]')
+_CJK_CHAR_RE = re.compile(_CJK)
 
 
-def _build_punct_replace_dict(paragraph_text: str) -> dict:
+def _is_cjk(ch: str) -> bool:
+    return bool(ch) and bool(_CJK_CHAR_RE.match(ch))
+
+
+def _halfwidth_edits(text: str) -> dict:
+    """算出本段需要改成全角的位置 → 全角字符。
+
+    逐处判断而不是"本段有一处挨着中文就全段替换"——后者会把
+    「采用公式f(x,y)计算,结果为1:2」改成「f(x，y）…1：2」。
+      · , ; : ? !   只改紧邻中文的那一处；
+      · ( )         成对判断：括号内有中文，或括号两侧都是中文 / 段首段尾
+                    （壳体(1)的 → 壳体（1）的），整对一起改；f(x,y) 这类保持半角。
+                    落单的括号按紧邻中文处理。
     """
-    针对当前段落文本，找出需要替换的半角→全角条目（仅在中文上下文中替换）。
-    返回 {half: full} 字典（仅含在本段中实际存在且紧邻中文的条目）。
-    """
-    result = {}
-    for half, full in _HALFWIDTH_MAP.items():
-        # 检测是否存在"中文+半角"或"半角+中文"模式
-        pattern = f'(?:{_CJK}{re.escape(half)}|{re.escape(half)}{_CJK})'
-        if re.search(pattern, paragraph_text):
-            result[half] = full
-    return result
+    edits = {}
+    stack, lone, pairs = [], [], []
+    for i, ch in enumerate(text):
+        if ch == "(":
+            stack.append(i)
+        elif ch == ")":
+            if stack:
+                pairs.append((stack.pop(), i))
+            else:
+                lone.append(i)
+    lone.extend(stack)
+
+    def _near_cjk(i: int) -> bool:
+        return (i > 0 and _is_cjk(text[i - 1])) or (i + 1 < len(text) and _is_cjk(text[i + 1]))
+
+    for o, c in pairs:
+        left = text[o - 1] if o > 0 else ""
+        right = text[c + 1] if c + 1 < len(text) else ""
+        outer = (not left or _is_cjk(left)) and (not right or _is_cjk(right))
+        if outer or any(_is_cjk(ch) for ch in text[o + 1:c]):
+            edits[o] = "（"
+            edits[c] = "）"
+    for i in lone:
+        if _near_cjk(i):
+            edits[i] = _HALFWIDTH_MAP[text[i]]
+    for i, ch in enumerate(text):
+        if ch in _HALFWIDTH_MAP and ch not in "()" and _near_cjk(i):
+            edits[i] = _HALFWIDTH_MAP[ch]
+    return edits
 
 
 # 半角句点 "." 的安全替换正则：
@@ -116,22 +152,13 @@ _SAFE_DOT_RE = re.compile(
 )
 
 
-def _safe_replace_dot_in_paragraph(paragraph) -> bool:
-    """
-    将段落中紧邻中文的半角句点 . 替换为全角句号 。，
-    但跳过「数字 + .」的序号格式（如 "1." "12."）。
+def _dot_edits(text: str) -> dict:
+    """紧邻中文的半角句点 → 「。」，跳过「数字 + .」序号。
 
-    直接操作 paragraph.runs 的 w:t 文本；返回是否有替换发生。
+    在整段显示文本上匹配：「1」与「.一种」分在两个 run 时，逐个 w:t 匹配的旧实现
+    看不到前一个 run 的数字，会把权项编号改成「1。一种」。
     """
-    changed = False
-    for run in paragraph.runs:
-        for wt in run._r.xpath('.//w:t'):
-            old = wt.text or ""
-            new = _SAFE_DOT_RE.sub("。", old)
-            if new != old:
-                wt.text = new
-                changed = True
-    return changed
+    return {m.start(): "。" for m in _SAFE_DOT_RE.finditer(text)}
 
 
 # 直引号配对替换：'X' → ‘X’，"X" → “X”
@@ -141,7 +168,6 @@ _QUOTE_PAIRS = {
     '"': ("“", "”"),
     "'": ("‘", "’"),
 }
-_CJK_CHAR_RE = re.compile(_CJK)
 
 
 def _safe_replace_quotes_in_paragraph(paragraph) -> bool:
@@ -224,16 +250,15 @@ def unify_halfwidth_punct(paragraphs, sections: dict = None) -> int:
         target_paras = list(enumerate(paragraphs))
 
     for _, para in target_paras:
-        text = para.text
+        text = display_text(para)
         if not text.strip():
             continue
         touched = False
-        # 1) 常规半角 → 全角（不含句点 "." 与引号）
-        replace_dict = _build_punct_replace_dict(text)
-        if replace_dict and annotate_paragraph_safe(para, replace_dict):
-            touched = True
-        # 2) 半角句点 "." → "。" 的安全替换（跳过 "数字." 序号格式）
-        if _safe_replace_dot_in_paragraph(para):
+        # 1) 常规半角 → 全角（不含引号）+ 2) 半角句点 "." → "。"（跳过 "数字." 序号）
+        #    均为等长逐字替换，位置在同一份文本上算，可一次写回
+        edits = _halfwidth_edits(text)
+        edits.update(_dot_edits(text))
+        if replace_chars(para, edits):
             touched = True
         # 3) 成对直引号 → 全角弯引号（按先开后闭交替配对）
         if _safe_replace_quotes_in_paragraph(para):
@@ -435,17 +460,12 @@ def check_typos_wordbank(paragraphs, sections: dict = None) -> list:
         text = paragraphs[i].text
         if not text.strip():
             continue
-        # 同一段中每处出现各报一条（应用时会整段全部替换，
-        # 逐条上报使显示数量与实际替换处数一致）；
-        # occurrence 按各 wrong 词在段内的出现次序计数，**1 基**——
-        # 消费方 content_area._nth_occurrence / locate_issue 都按"第 n 次出现"
-        # (1 基) 解释该值，此处若发 0 基会让第 2 处之后全部定位/高亮错位一格。
-        occ_counter: dict = {}
+        # 同一段中每处出现各报一条，应用时按 occurrence 只改那一处；
+        # occurrence 为 1 基、与定位 / 应用共用 occurrence_at / nth_occurrence 计数。
         for m in pattern.finditer(text):
             wrong = m.group(0)
-            occ = occ_counter.get(wrong, 0) + 1
-            occ_counter[wrong] = occ
             pos = m.start()
+            occ = occurrence_at(text, wrong, pos)
             # 提取上下文（前后各15字）
             start = max(0, pos - 15)
             end = min(len(text), pos + len(wrong) + 15)
@@ -502,8 +522,6 @@ def check_duplicate_words(paragraphs, sections: dict = None,
     locate = _make_locator_with_paragraphs(sections or {}, paragraphs)
     pattern = _dup_pattern(min_len, max_len)
 
-    seen_keys = set()  # 同段落同 wrong 去重
-
     for i in target:
         text = paragraphs[i].text
         if not text or not text.strip():
@@ -534,12 +552,7 @@ def check_duplicate_words(paragraphs, sections: dict = None,
                 match_s, match_e = m.start(), m.end()
                 if any(s <= match_s and e >= match_e for s, e in ignore_spans):
                     continue
-            # 过滤单字「的的、了了」等高频虚词时可后期再加（暂保留）
-            key = (i, full)
-            if key in seen_keys:
-                continue
-            seen_keys.add(key)
-
+            # 同段同词每处各报一条（应用时按 occurrence 只改这一处）
             pos = m.start()
             start = max(0, pos - 15)
             end = min(len(text), pos + len(full) + 15)
@@ -551,6 +564,7 @@ def check_duplicate_words(paragraphs, sections: dict = None,
                 "wrong": full,
                 "suggestion": unit,  # 默认建议：保留一份
                 "kind": "duplicate",
+                "occurrence": occurrence_at(text, full, pos),
             })
     return results
 
@@ -614,7 +628,6 @@ def check_duplicate_punct(paragraphs, sections: dict = None) -> list:
         text = paragraphs[i].text
         if not text or not text.strip():
             continue
-        occ_counter: dict = {}
         for m in _DUP_PUNCT_RUN_RE.finditer(text):
             run = m.group(0)
             # 英文省略号 "..."（3 个及以上半角句点）是合法写法，跳过
@@ -626,9 +639,8 @@ def check_duplicate_punct(paragraphs, sections: dict = None) -> list:
             if len(norm) != 1:
                 continue
             keep = _dup_punct_suggestion(run)
-            occ = occ_counter.get(run, 0) + 1
-            occ_counter[run] = occ
             pos = m.start()
+            occ = occurrence_at(text, run, pos)
             start = max(0, pos - 15)
             end = min(len(text), pos + len(run) + 15)
             results.append({
@@ -663,30 +675,103 @@ def merge_typo_results(*result_lists) -> list:
     return merged
 
 
+def nth_occurrence(text: str, needle: str, n: int) -> int:
+    """needle 在 text 中第 n 次出现（1 基，允许重叠）的偏移；找不到返回 -1。"""
+    if not text or not needle or n < 1:
+        return -1
+    idx = -1
+    for _ in range(n):
+        idx = text.find(needle, idx + 1)
+        if idx == -1:
+            return -1
+    return idx
+
+
+def occurrence_at(text: str, needle: str, pos: int) -> int:
+    """pos 处的 needle 是第几次出现（与 nth_occurrence 同一套计数，1 基）。
+
+    检查结果的 occurrence 必须用这套计数：按正则 finditer 自己数会和定位 / 应用
+    时的 str.find 计数对不上——「权力要求书…权力要求」里第二处「权力要求」
+    按 finditer 是第 1 次，按 find 却是第 2 次（第 1 次藏在「权力要求书」里）。
+    """
+    n = 0
+    idx = text.find(needle)
+    while 0 <= idx <= pos:
+        n += 1
+        idx = text.find(needle, idx + 1)
+    return n
+
+
 def apply_typo_corrections(paragraphs, corrections: list) -> int:
     """
     将用户确认的修正写回内存中的段落对象（不保存文件）。
 
     参数:
         paragraphs:  全文段落列表
-        corrections: [{"para_idx": int, "wrong": str, "confirmed_fix": str}, ...]
+        corrections: [{"para_idx": int, "wrong": str, "confirmed_fix": str,
+                       "occurrence": int(可选，1 基)}, ...]
+                     有 occurrence 时只改那一处；没有则改本段全部出现。
                      confirmed_fix 为空字符串时跳过该条。
 
     返回:
-        实际发生替换的段落数。
+        实际替换的处数。
     """
-    # 按段落分组，批量替换（同一段落可能有多处修正）
     from collections import defaultdict
-    para_replace: dict[int, dict] = defaultdict(dict)
+    by_para: dict = defaultdict(list)
     for item in corrections:
-        fix = item.get("confirmed_fix", "").strip()
-        if not fix:
+        fix = (item.get("confirmed_fix") or "").strip()
+        wrong = item.get("wrong") or ""
+        if not fix or not wrong or fix == wrong:
             continue
-        if item["wrong"] != fix:
-            para_replace[item["para_idx"]][item["wrong"]] = fix
+        by_para[item["para_idx"]].append((wrong, fix, item.get("occurrence")))
 
     count = 0
-    for para_idx, replace_dict in para_replace.items():
-        if annotate_paragraph_safe(paragraphs[para_idx], replace_dict):
-            count += 1
+    for para_idx, items in by_para.items():
+        para = paragraphs[para_idx]
+        text = display_text(para)
+        spans = []
+        for wrong, fix, occ in items:
+            if occ:
+                pos = nth_occurrence(text, wrong, int(occ))
+                if pos >= 0:
+                    spans.append((pos, pos + len(wrong), fix))
+            else:
+                pos = text.find(wrong)
+                while pos >= 0:
+                    spans.append((pos, pos + len(wrong), fix))
+                    pos = text.find(wrong, pos + len(wrong))
+        # 区间重叠（两条结果指向交叠的字）时只保留靠前的一条
+        spans.sort()
+        kept, end = [], -1
+        for s, e, f in spans:
+            if s >= end:
+                kept.append((s, e, f))
+                end = e
+        if not kept:
+            continue
+        new_text = text
+        for s, e, f in reversed(kept):
+            new_text = new_text[:s] + f + new_text[e:]
+        if set_paragraph_text(para, new_text):
+            count += len(kept)
     return count
+
+
+def remap_after_edit(old_text: str, new_text: str, pos: int, old_len: int,
+                     new_len: int, items: list) -> list:
+    """同段一处 [pos, pos+old_len) 被改成 new_len 个字之后，重算其余结果的 occurrence。
+
+    返回与 items 等长的列表：已失效（与改动区间交叠、或改后原位置已不是该词）
+    的为 None，其余为 occurrence 更新后的副本。
+    """
+    out = []
+    for it in items:
+        w = it.get("wrong") or ""
+        p = nth_occurrence(old_text, w, int(it.get("occurrence", 1) or 1))
+        np = p if p < pos else p + new_len - old_len
+        if (p < 0 or (p < pos + old_len and pos < p + len(w))
+                or new_text[np:np + len(w)] != w):
+            out.append(None)
+        else:
+            out.append({**it, "occurrence": occurrence_at(new_text, w, np)})
+    return out

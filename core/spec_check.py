@@ -179,6 +179,7 @@ def check_embodiment_numbering(paragraphs, sections) -> list:
 
 # ── 摘要字数 ──────────────────────────────────────────────────────
 _WS_RE = re.compile(r"\s+")
+_TITLE_PREFIX_RE = re.compile(r"\s*(?:说\s*明\s*书\s*)?摘\s*要\s*[:：]\s*")
 
 
 def check_abstract_length(paragraphs, sections, limit: int = 300) -> list:
@@ -190,7 +191,7 @@ def check_abstract_length(paragraphs, sections, limit: int = 300) -> list:
     if sec is None or sec.start_idx >= sec.end_idx:
         return []
 
-    body = []   # (para_idx, text)，跳过标题段与空段
+    body = []   # (para_idx, text, 正文起点)，跳过标题段与空段
     for i in range(sec.start_idx, sec.end_idx):
         try:
             text = paragraphs[i].text
@@ -199,18 +200,22 @@ def check_abstract_length(paragraphs, sections, limit: int = 300) -> list:
         clean = _WS_RE.sub("", text)
         if not clean or clean in ("说明书摘要", "摘要"):
             continue
-        body.append((i, text))
+        # 「摘要：本发明…」标题与正文同段：标题前缀不计字数
+        m = _TITLE_PREFIX_RE.match(text)
+        body.append((i, text, m.end() if m else 0))
 
-    total = sum(len(_WS_RE.sub("", t)) for _, t in body)
+    total = sum(len(_WS_RE.sub("", t[k:])) for _, t, k in body)
     if total <= limit:
         return []
 
     # 定位跨过第 limit 字的那段与段内偏移（越界起点）
     cum = 0
     anchor_pid, anchor_off = -1, 0
-    for pid, text in body:
+    for pid, text, skip in body:
         nws = 0
         for off, ch in enumerate(text):
+            if off < skip:
+                continue
             if not ch.isspace():
                 nws += 1
                 if cum + nws == limit + 1:

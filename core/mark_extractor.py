@@ -6,6 +6,16 @@ mark_extractor.py — 标记提取器
 import re
 
 
+_SEP = r"[-\-—–、.．,:：\s]"
+_NAME_CH = r"[\u4e00-\u9fa5a-zA-Z]"
+_ENTRY_RE = re.compile(
+    r"(?<!\d)(\d+(?:\s*[、,，和及]\s*\d+)*)"   # 编号（可多个）
+    + r"\s*" + _SEP + r"\s*"
+    + r"(" + _NAME_CH + r"(?:" + _NAME_CH + r"|\d+(?!\s*[-—–、.．,:：]|\s+\S))*)"
+)
+_NUM_RE = re.compile(r"\d+")
+
+
 def extract_marks_from_text(text: str) -> dict[int, str]:
     """
     从附图标记文本中提取标记字典。
@@ -30,13 +40,15 @@ def extract_marks_from_text(text: str) -> dict[int, str]:
     # 如果文本包含"附图标记"前缀，去掉
     text = re.sub(r'^.*?附图标记\s*[:：]\s*', '', text.strip())
 
-    # 策略1: "数字+分隔符+名称" 模式
-    # 匹配: 1-齿圈, 1、齿圈, 1.齿圈, 1 齿圈 等
-    pattern1 = r'(\d+)\s*[-\-—–、.．,:：\s]\s*([\u4e00-\u9fa5a-zA-Z][\u4e00-\u9fa5a-zA-Z]*)'
-    for m in re.finditer(pattern1, text):
-        num = int(m.group(1))
+    # 策略1: "编号+分隔符+名称" 模式
+    # 匹配: 1-齿圈, 1、齿圈, 1.齿圈, 1 齿圈；多个编号共用一个名称（11、12-侧板）；
+    # 名称内可含数字（2-第3连杆），但「数字 + 分隔符」视为下一条的开头而不吞进名称
+    for m in _ENTRY_RE.finditer(text):
         name = m.group(2).strip()
-        if name and len(name) >= 1:
+        if not name:
+            continue
+        for num_s in _NUM_RE.findall(m.group(1)):
+            num = int(num_s)
             if num not in marks:
                 marks[num] = name
 

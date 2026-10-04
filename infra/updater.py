@@ -52,6 +52,13 @@ _APP = "MarkAssistant"
 
 # ─────────────────────── 数据模型 ───────────────────────
 
+def _notes_text(notes) -> str:
+    """更新说明：旧版发版脚本把多行说明写成了 JSON 数组，按行拼回。"""
+    if isinstance(notes, list):
+        return "\n".join(str(x) for x in notes).strip()
+    return str(notes or "").strip()
+
+
 @dataclass
 class UpdateInfo:
     version: str
@@ -70,7 +77,7 @@ class UpdateInfo:
             url_github=str(raw.get("url_github", "")).strip(),
             sha256=str(raw.get("sha256", "")).strip().lower(),
             size=int(raw.get("size", 0)),
-            notes=str(raw.get("notes", "")).strip(),
+            notes=_notes_text(raw.get("notes", "")),
             released_at=str(raw.get("released_at", "")).strip(),
         )
 

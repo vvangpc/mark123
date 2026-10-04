@@ -3,6 +3,10 @@
 typo_wordbank.py — 专利文档常见错别字/错误用词词库
 每项格式: {"wrong": "错误写法", "suggestion": "正确写法"}
 可持续手工扩充。
+
+检查按子串匹配，不分词：收词时要确认 wrong 不会跨词命中正常写法——
+「限为」会命中「上限为」、「轴成」会命中「与轴成45度」、「北京技术」会命中公司名。
+这类条目宁可不收；也不收把合法技术术语改成近义词的条目（固结、枢接、栓接…）。
 """
 
 WORDBANK = [
@@ -26,7 +30,6 @@ WORDBANK = [
 
     # ── 技术领域/背景 ──
     {"wrong": "技术领与",     "suggestion": "技术领域"},
-    {"wrong": "北京技术",     "suggestion": "背景技术"},
     {"wrong": "背景几术",     "suggestion": "背景技术"},
 
     # ── 发明/实用新型 ──
@@ -39,7 +42,6 @@ WORDBANK = [
     {"wrong": "固顶",         "suggestion": "固定"},
     {"wrong": "联结",         "suggestion": "连接"},   # 注意：部分场景"联结"可接受，词库可按需删除
     {"wrong": "安转",         "suggestion": "安装"},
-    {"wrong": "设直",         "suggestion": "设置"},
     {"wrong": "包扩",         "suggestion": "包括"},
     {"wrong": "包扣",         "suggestion": "包括"},
 
@@ -81,17 +83,9 @@ WORDBANK = [
 
     # ── 结构 / 部件用词 ──
     {"wrong": "构件",         "suggestion": "构件"},   # 占位（同义保留）
-    {"wrong": "件部",         "suggestion": "部件"},
-    {"wrong": "组装件",       "suggestion": "组件"},
-    {"wrong": "装配件",       "suggestion": "组件"},
-    {"wrong": "联接件",       "suggestion": "连接件"},
-    {"wrong": "固结",         "suggestion": "固定"},
-    {"wrong": "固持",         "suggestion": "固定"},
-    {"wrong": "枢接于",       "suggestion": "铰接于"},
     {"wrong": "鉸接",         "suggestion": "铰接"},
     {"wrong": "螺纹连结",     "suggestion": "螺纹连接"},
     {"wrong": "螺栓连结",     "suggestion": "螺栓连接"},
-    {"wrong": "栓接",         "suggestion": "螺栓连接"},
 
     # ── 形近 / 同音错字 ──
     {"wrong": "园柱",         "suggestion": "圆柱"},
@@ -99,20 +93,15 @@ WORDBANK = [
     {"wrong": "园弧",         "suggestion": "圆弧"},
     {"wrong": "圆孤",         "suggestion": "圆弧"},
     {"wrong": "圆桩",         "suggestion": "圆柱"},
-    {"wrong": "桩体",         "suggestion": "柱体"},
     {"wrong": "园锥",         "suggestion": "圆锥"},
     {"wrong": "椎形",         "suggestion": "锥形"},
-    {"wrong": "锯齿装",       "suggestion": "锯齿状"},
-    {"wrong": "形装",         "suggestion": "形状"},
     {"wrong": "园环",         "suggestion": "圆环"},
     {"wrong": "圆桶",         "suggestion": "圆筒"},
 
     # ── 描述 / 动词 ──
-    {"wrong": "用与",         "suggestion": "用于"},
     {"wrong": "适合用与",     "suggestion": "适合用于"},
     {"wrong": "用以于",       "suggestion": "用于"},
     {"wrong": "通过过",       "suggestion": "通过"},
-    {"wrong": "在通过",       "suggestion": "通过"},
     {"wrong": "配合于",       "suggestion": "配合"},
     {"wrong": "相互连结",     "suggestion": "相互连接"},
     {"wrong": "相互联结",     "suggestion": "相互连接"},
@@ -121,8 +110,6 @@ WORDBANK = [
     {"wrong": "穿装",         "suggestion": "穿设"},
     {"wrong": "贯设",         "suggestion": "贯穿"},
     {"wrong": "形成有有",     "suggestion": "形成有"},
-    {"wrong": "设制",         "suggestion": "设置"},
-    {"wrong": "设至",         "suggestion": "设置"},
     {"wrong": "设臵",         "suggestion": "设置"},
     {"wrong": "安排在",       "suggestion": "设置在"},
     {"wrong": "包刮",         "suggestion": "包括"},
@@ -161,10 +148,8 @@ WORDBANK = [
     {"wrong": "电机器",       "suggestion": "电机"},
     {"wrong": "马达机",       "suggestion": "电机"},
     {"wrong": "电源源",       "suggestion": "电源"},
-    {"wrong": "传感气",       "suggestion": "传感器"},
 
     # ── 副词 / 连词错用 ──
-    {"wrong": "另外的",       "suggestion": "另一个"},
     {"wrong": "可以为",       "suggestion": "可以是"},
     {"wrong": "因为而",       "suggestion": "因而"},
     {"wrong": "并且且",       "suggestion": "并且"},
@@ -180,8 +165,6 @@ WORDBANK = [
     {"wrong": "阀值",         "suggestion": "阈值"},
     {"wrong": "阔值",         "suggestion": "阈值"},
     {"wrong": "偶合",         "suggestion": "耦合"},
-    {"wrong": "限为",         "suggestion": "限位"},
-    {"wrong": "现位",         "suggestion": "限位"},
 
     # ── 用户补充：连接 / 接合类动词 ──
     {"wrong": "卡结",         "suggestion": "卡接"},
@@ -193,20 +176,16 @@ WORDBANK = [
     {"wrong": "临接",         "suggestion": "邻接"},
 
     # ── 用户补充：结构件 / 几何特征 ──
-    {"wrong": "轴成",         "suggestion": "轴承"},
-    {"wrong": "结面",         "suggestion": "截面"},
     {"wrong": "凭行",         "suggestion": "平行"},
     {"wrong": "凹曹",         "suggestion": "凹槽"},
     {"wrong": "突台",         "suggestion": "凸台"},
     {"wrong": "密风",         "suggestion": "密封"},
-    {"wrong": "靠进",         "suggestion": "靠近"},
     {"wrong": "远里",         "suggestion": "远离"},
     {"wrong": "围饶",         "suggestion": "围绕"},
     {"wrong": "溶纳腔",       "suggestion": "容纳腔"},
 
     # ── 用户补充：步骤 / 工艺 ──
     {"wrong": "步聚",         "suggestion": "步骤"},
-    {"wrong": "流成",         "suggestion": "流程"},
 
     # ── 用户补充：电子电气 ──
     {"wrong": "传敢器",       "suggestion": "传感器"},
@@ -218,10 +197,8 @@ WORDBANK = [
 
     # ── 用户补充：材料 / 行业杂项 ──
     {"wrong": "混泥土",       "suggestion": "混凝土"},
-    {"wrong": "钢进",         "suggestion": "钢筋"},
     {"wrong": "反映堆",       "suggestion": "反应堆"},
     {"wrong": "屏敝",         "suggestion": "屏蔽"},
-    {"wrong": "包复",         "suggestion": "包覆"},
     {"wrong": "涡轮计",       "suggestion": "涡轮机"},
 ]
 
