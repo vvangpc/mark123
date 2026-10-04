@@ -75,6 +75,7 @@ DEFAULT_BOUNDARY_BLACKLIST = [
     # 收了会把「所述光谱采集单元」截成「光谱」。
     "进行", "设定", "发出", "具体", "简化", "转换", "施加",
     "判断", "得到", "转动", "配置", "调制", "遮挡",
+    "乘以", "除以", "作用于", "作用下",
     # ── 连词/助词/介词类 ──
     "与其", "和其", "及其", "或者",
 ]
@@ -106,7 +107,7 @@ _CLAIM_HEAD_RE = re.compile(r'^\s*(\d+)\s*[\.\．\、]\s*')
 _CITE_RE = re.compile(
     r'(?:根据|如|按照|依据)?权利要求\s*'
     r'([0-9０-９]+(?:\s*(?:[,，、和或至\-－~～]|到|或者)\s*(?:权利要求)?\s*[0-9０-９]+)*)'
-    r'\s*中?\s*(?:任(?:意)?一?项?)?\s*所述'
+    r'\s*中?\s*的?\s*(?:任(?:意)?一?项?|之一)?\s*所述'
 )
 _RANGE_RE = re.compile(r'(\d+)\s*(?:[-－~～]|至|到)\s*(\d+)')
 _NUM_RE = re.compile(r'\d+')
@@ -292,7 +293,7 @@ def check_multi_dependency(claims: dict) -> list:
     多项引用合法性检查：
       1. 多项引用只能用"或"，不能用"和/及/与"来并列（"和"会被解读为同时满足）；
          "权利要求1-3任一项所述" 合法；"权利要求1和2所述" 不合法
-      2. 多引多（实施细则 22.2）：多项引用权利要求不得作为另一项
+      2. 多引多（实施细则第 25 条第 2 款，2023 修订前为第 22 条第 2 款）：多项引用权利要求不得作为另一项
          多项引用权利要求的引用基础
       3. 多项引用建议写明「中任一项」，否则保护范围表述不清，常被审查员指出
     """
@@ -318,7 +319,7 @@ def check_multi_dependency(claims: dict) -> list:
                     "message": f"权利要求 {no} 的多项引用使用了'和/、'连接，应改为'或'",
                     "suggestion": grp["raw"].replace("和", "或").replace("、", "或"),
                 })
-            elif "任一" not in grp["raw"] and "任意" not in grp["raw"]:
+            elif not any(k in grp["raw"] for k in ("任一", "任意", "之一")):
                 # 多项引用缺「任一项」（and 模式已在上面单独报，不重复提示）
                 results.append({
                     "kind": "multi_dep",
@@ -339,7 +340,7 @@ def check_multi_dependency(claims: dict) -> list:
                     "context": grp["raw"],
                     "message": (
                         f"权利要求 {no} 多项引用了多项引用权利要求 {hit_str}"
-                        f"（多引多，不符合专利法实施细则第 22 条第 2 款）"
+                        f"（多引多，不符合专利法实施细则第二十五条第二款）"
                     ),
                     "suggestion": "改写被引权项为单项引用，或拆分本权项的引用关系",
                 })
@@ -446,6 +447,20 @@ def _is_noisy_ngram(seg: str) -> bool:
     return any(ch in _STOPCHARS for ch in seg)
 
 
+# 方位 / 大小字打头时几乎总是部件名本身（上盖、下壳体、内筒、侧板、大齿轮…），
+# 夹在中间或尾部时才多半是越界（壳体上设…），故定长模式只对首字放行这几个字。
+_TERM_HEAD_OK = set("上下中内外前后左右侧大小")
+
+
+def _is_noisy_fixed_term(core: str) -> bool:
+    """定长 n 字模式下"所述"侧术语的噪声判据（core 为去掉序数前缀后的部分）。"""
+    if not core:
+        return True
+    if core[0] in _STOPCHARS and core[0] not in _TERM_HEAD_OK:
+        return True
+    return _is_noisy_ngram(core[1:])
+
+
 # 序数前缀「第X」里 X 的取值（「第一连接件」的 min_keep 跨越判定用）
 _ORDINAL_CHARS = set("一二三四五六七八九十0123456789０１２３４５６７８９")
 
@@ -482,34 +497,88 @@ def _trim_stopchars(seg: str) -> str:
     return seg[:i]
 
 
-def _sliding_cjk_ngrams(text: str, n: int, skip_noise: bool = False) -> list:
-    """
-    从文本中提取所有长度为 n 的"全中文"子串。
-    非中文字符视为分隔符（不产生包含它们的子串）。
-    返回 (ngram, start_idx) 的列表。
-
-    skip_noise=True 时过滤掉含停用字的 ngram（用于术语提取以降噪）。
-    """
-    out = []
+def _cjk_run(text: str, start: int, limit: int) -> str:
+    """从 start 起取连续 CJK 字，最多 limit 个。"""
+    end = start
     L = len(text)
-    for i in range(L - n + 1):
-        seg = text[i:i + n]
-        if not all(_CJK_RE.match(ch) for ch in seg):
-            continue
-        if skip_noise and _is_noisy_ngram(seg):
-            continue
-        out.append((seg, i))
-    return out
+    while end < L and end - start < limit and _CJK_RE.match(text[end]):
+        end += 1
+    return text[start:end]
 
 
-# 用于识别"X所述"是否为"权利要求N所述"的引用语：若"所述"前 12 字内
-# 出现"权利要求\d+"，视为引用语公式，本处的"所述"不参与引用基础检查。
+# 序数前缀：所述第一连接件 / 所述第三弹簧
+_ORDINAL_RE = re.compile(r'第[一二三四五六七八九十百零〇两]+')
+
+# 数量前缀：所述多个连接杆 / 所述至少两个光源 / 所述若干支架 / 所述各连接杆。
+# 量词只收不构成技术形容词的那几个——层 / 段 / 级 / 孔 会组成 多层结构 / 三段式 /
+# 多孔板 这类术语本体，剥掉反而丢信息。
+_QUANT_CLS = "个根对组条块片只件套台支"
+_QUANTIFIER_RE = re.compile(
+    r'(?:至少|至多|不少于|不多于)?'
+    rf'(?:(?:[一二两三四五六七八九十]+|多|数)[{_QUANT_CLS}]|若干[{_QUANT_CLS}]?)'
+    rf'|(?:各|每)[{_QUANT_CLS}一]?'
+)
+
+
+def _ordinal_len(text: str, start: int) -> int:
+    m = _ORDINAL_RE.match(text, start)
+    return m.end() - start if m else 0
+
+
+# 兜底识别"权利要求N所述"引用语：_CITE_RE 解析不了的写法，若"所述"前 12 字内
+# 出现"权利要求\d"，也视为引用语公式。
 _CLAIM_CITE_PREFIX_RE = re.compile(r'权利要求\s*\d')
 
 
 def _is_in_citation_formula(text: str, suoshu_pos: int) -> bool:
     lookback_start = max(0, suoshu_pos - 12)
     return bool(_CLAIM_CITE_PREFIX_RE.search(text[lookback_start:suoshu_pos]))
+
+
+def _find_references(text: str) -> list:
+    """返回 [(p, s)]：p 为"所述"位置，s 为被引术语起点（"所述的X"跳过"的"）。
+
+    权利要求引用语里的"所述"（根据权利要求1、2、3、4或5中任一项所述…）不算：
+    先按 _CITE_RE 的命中区间排除，长引用串超出 12 字回看窗口也不会漏判。
+    """
+    cite_spans = [m.span() for m in _CITE_RE.finditer(text)]
+    out = []
+    for m in _SUOSHU_RE.finditer(text):
+        p = m.start()
+        if any(a <= p < b for a, b in cite_spans) or _is_in_citation_formula(text, p):
+            continue
+        s = p + 2
+        if s < len(text) and text[s] == "的":
+            s += 1
+        out.append((p, s))
+    return out
+
+
+def _collect_definitions(text: str, ref_starts: set, max_len: int) -> dict:
+    """连续 CJK 段里所有 2..max_len 字子串 → 首次出现位置。
+
+    起点落在被引术语起点（ref_starts）上的子串是引用、不是定义，跳过。
+    只排除起点而不盖住一整段固定宽度：固定掩码会越过较短的被引术语，把紧随其后
+    真正首次出现的术语也盖掉——「所述多源合束器（5）为二向色镜」里的 二向色镜、
+    「所述梁单元力学模型上的最大弯曲应力」里的 最大弯曲应力 都因此登记不进来。
+    """
+    out: dict = {}
+    L = len(text)
+    i = 0
+    while i < L:
+        if not _CJK_RE.match(text[i]):
+            i += 1
+            continue
+        j = i
+        while j < L and _CJK_RE.match(text[j]):
+            j += 1
+        for k in range(i, j - 1):
+            if k in ref_starts:
+                continue
+            for e in range(k + 2, min(j, k + max_len) + 1):
+                out.setdefault(text[k:e], k)
+        i = j
+    return out
 
 
 # ─────────────────────────────────────────
@@ -592,303 +661,180 @@ def check_antecedent_basis(claims: dict, n: int, ignore_set: set,
     原则：以"所述X"形式出现的术语 X，必须在之前（同权项内或该权项所引用的
     更早权项中）以"非所述"方式出现过一次（视为首次定义）。
 
-    术语 X 的提取策略：
-      • 默认（两个开关都关）：紧跟"所述"后取 n 个 CJK 字
-      • 仅 use_dynamic_truncate=True：从"所述"往后扫，遇到标点 / 黑名单词
-        立刻停下，把累积的 CJK 字串作为术语（自适应长度）
-      • 仅 use_dynamic_fallback=True：取 n 字后，若不在已定义集中，则不断
-        把末尾砍掉一个字，重试，直到匹配到或缩到 2 字仍不匹配才报错
-      • 两个都开：先用截断得到一个"干净"的最长术语，再对该术语应用回退
-        （从右向左缩短）。仅当所有前缀都没匹配时才报错——这是误判最低的组合
+    术语 X 的提取策略（X 从"所述"/"所述的"之后起算）：
+      • 默认（两个开关都关）：取 n 个 CJK 字；不足 n 字时取实际可用的 ≥2 字
+      • 仅 use_dynamic_truncate：按标点 / 单字虚词 / 黑名单词截断，剪掉尾部停用字；
+        截断退化（<2 字）或溢出（> DYN_TRUNC_SOFT_MAX）时回落到 n 字
+      • 仅 use_dynamic_fallback：取 n 字后从右往左逐字缩短，任一前缀有定义即放过
+      • 两个都开：先截断，再对截断结果做回退——误判最低的组合
+    序数前缀「第X」不计入 n、回退也不会缩进序数之后不足 2 字（否则「所述第三弹簧」
+    会被「第三光路」里的「第三」放过）；数量前缀（多个 / 至少两个 / 各…）不匹配时
+    剥掉再试一次。
 
-    三条防漏报兜底（缺一就会出现"明明写了却不报"）：
-      1. "所述"后不足 n 个 CJK 字时（如 n=6 而原文是「所述壳体，」），取实际
-         可用的 ≥2 字形式参与检查，而不是整条跳过；默认模式下按该短长度
-         另建一份定义集（含被引权项的继承），避免凭空报缺失。
-      2. 动态截断退化成 <2 字时（黑名单词打头的部件名，如「所述安装座」），
-         回落到 n 字 / 短术语，而不是跳过。
-      3. 动态术语的噪声判据放宽为"整串都是停用字"，见 _is_all_stopchars。
+    定义集：本权项"非引用"位置出现过的全部 2..max_len 字 CJK 子串（见
+    _collect_definitions），加上引用链继承。择一引用（或 / 至 / -）要求术语在
+    **每个**被引权项的引用链里都有定义——「根据权利要求1或2所述」里只有权利要求 2
+    引入的特征，与权利要求 1 组合时就没有引用基础。
 
-    注：滑窗式定义集仍然按 n 字累积；回退/截断只影响"所述"侧的术语形态。
+    同一缺失术语在本权项及其从属权项里只报首处。
     """
     results = []
     ignore_set = set(ignore_set or ())
-    # 准备黑名单查找表（即便没启用截断也无副作用）
     bl_first_chars, bl_words, bl_lengths = _build_blacklist_lookup(boundary_blacklist or [])
-    dyn_mode = use_dynamic_truncate or use_dynamic_fallback
-    # 动态模式下，术语长度可变；用更宽松的最大长度做候选
-    DYN_MAX_LEN = DYN_TERM_MAX_LEN
+    # 定义集子串上限：要能容纳「序数 + n 字」与截断术语
+    max_len = max(DYN_TERM_MAX_LEN, n) + 4
 
-    def _collect_freeform_terms(text: str, suoshu_mask: list) -> dict:
-        """
-        把文本拆成"连续 CJK 段"，对每段产生所有长度 2..DYN_MAX_LEN 的子串
-        作为"已定义术语候选"。与 suoshu_mask 标记区间相交的子串视为引用，跳过。
-        返回 {子串: 首次出现位置} 的字典，用于做"前向引用"的位置比较。
+    defs: dict = {}        # {claim_no: {term: 本权项内首次位置}}
+    groups_of: dict = {}   # {claim_no: [(须全部满足?, [被引权项…])]}
+    reported: dict = {}    # {claim_no: 本权项及其引用链上已报过的术语}
+    memo: dict = {}
 
-        优化：用 next_suoshu[i] 表示"从 i 起首个被标记位置"做 O(1) 重叠判断，
-        避免原实现里 any(pos in set for ...) 的 O(L_sub) 开销。
-        """
-        out: dict = {}
-        L = len(text)
-        # next_suoshu[i] = 从位置 i 起首个 mask=True 的下标（含 i），越界返回 L
-        next_suoshu = [L] * (L + 1)
-        for i in range(L - 1, -1, -1):
-            next_suoshu[i] = i if suoshu_mask[i] else next_suoshu[i + 1]
+    def _has(c: int, term: str) -> bool:
+        """term 是否在权项 c 的完整引用链（含 c 自身全文）中有定义。"""
+        key = (c, term)
+        hit = memo.get(key)
+        if hit is None:
+            hit = term in defs[c] or _inherited(c, term)
+            memo[key] = hit
+        return hit
 
-        i = 0
-        while i < L:
-            if not _CJK_RE.match(text[i]):
-                i += 1
-                continue
-            j = i
-            while j < L and _CJK_RE.match(text[j]):
-                j += 1
-            seg_len = j - i
-            max_sub = min(DYN_MAX_LEN, seg_len)
-            for L_sub in range(2, max_sub + 1):
-                for k in range(i, j - L_sub + 1):
-                    # 子串 [k, k+L_sub) 与 suoshu_mask 有交集 ⇔ next_suoshu[k] < k+L_sub
-                    if next_suoshu[k] < k + L_sub:
-                        continue
-                    sub = text[k:k + L_sub]
-                    prev = out.get(sub)
-                    if prev is None or k < prev:
-                        out[sub] = k
-            i = j
-        return out
+    def _inherited(no: int, term: str) -> bool:
+        for need_all, nums in groups_of[no]:
+            if (all if need_all else any)(_has(c, term) for c in nums):
+                return True
+        return False
 
-    # 先给每个权项建立"已定义的 n 字术语 → 首次位置"的映射
-    # 遍历时，按权项从小到大，继承该权项所依赖的权项的定义（继承项位置视为 -1）
-    defined_pos_by_claim: dict = {}       # {claim_no: {term: first_pos}}
-    defined_free_pos_by_claim: dict = {}  # 动态模式下使用
-    # 短术语（长度 2..n-1）的分档定义集：{claim_no: {L: {term: first_pos}}}
-    # 仅在"所述"后不足 n 字、需要走短术语通道时才按需构建对应长度那一档。
-    defined_short_by_claim: dict = {}
     for no in sorted(claims.keys()):
         info = claims[no]
-        # 起始字典 = 所有被其引用的前序权项的 defined 集合的并，位置统一记 -1
-        # -1 意味着"继承而来，早于当前权项内的任何引用位置"
-        cur_defined_pos: dict = {}
-        cur_defined_free_pos: dict = {}
-        cur_short: dict = {}
-        for cited in info.cites:
-            for t in defined_pos_by_claim.get(cited, {}):
-                cur_defined_pos.setdefault(t, -1)
-            for t in defined_free_pos_by_claim.get(cited, {}):
-                cur_defined_free_pos.setdefault(t, -1)
-            for L_c, m_c in defined_short_by_claim.get(cited, {}).items():
-                tgt = cur_short.setdefault(L_c, {})
-                for t in m_c:
-                    tgt.setdefault(t, -1)
-        # 遍历文本，识别"非所述的 n 字 CJK 子串"作为首次定义
         text = info.text
+        groups = []
+        for g in info.cite_groups:
+            nums = sorted(c for c in g["nums"] if c in claims and c < no)
+            if nums:
+                groups.append((g["mode"] in ("or", "range"), nums))
+        groups_of[no] = groups
 
-        def _defined_before(term: str, pos: int) -> bool:
-            """判断 term 是否在位置 pos 之前被定义过（继承项视为 -1）。"""
-            dp = cur_defined_pos.get(term)
-            if dp is not None and dp < pos:
-                return True
-            dp = cur_defined_free_pos.get(term)
-            if dp is not None and dp < pos:
-                return True
-            # 短术语通道：长度 != n 的术语不可能出现在 n 字滑窗定义集里，
-            # 需按其自身长度另查一档（动态模式已有自由形式集，这里主要服务默认模式）
-            L_t = len(term)
-            if 2 <= L_t < n:
-                dp = _short_map(L_t).get(term)
-                if dp is not None and dp < pos:
-                    return True
-            return False
-        # 过滤掉"权利要求N所述"中的"所述"（属于引用语公式，不是反向引用）
-        suoshu_positions = [
-            m.start() for m in _SUOSHU_RE.finditer(text)
-            if not _is_in_citation_formula(text, m.start())
-        ]
-        # 引用区窗口：
-        #   • 默认（无动态模式）  → n 字
-        #   • 仅 use_dynamic_fallback → DYN_MAX_LEN 字（回退会试 n..2 字所有前缀）
-        #   • 启用 use_dynamic_truncate → 用同一套截断逻辑算出的实际术语长度
-        #     这避免了「12 字窗口把后面真正定义的术语也吞掉」的问题
-        #     例：「所述垂直延伸板段的端部设有挂钩（10），所述挂钩…」
-        #         如果窗口是固定 12 字，会把"挂"扣掉，导致"挂钩"收不进定义集；
-        #         用截断逻辑算出真实长度 7（停在"端部"），"挂钩"就能正常入集。
-        # 优化：trunc_term 每个位置最多算一次，复用在 suoshu_mask 构造 + 主校验
-        text_len = len(text)
-        trunc_term_cache: dict = {}
-        # suoshu_mask：完整"所述X"窗口，供动态模式的自由形式收集用——
-        #   自由形式按变长子串收集，必须盖住 X 的整段，否则会把引用短语的子串
-        #   误当作"首次定义"。
-        # ngram_mask：仅盖住"所述X"中 X 的【首字】，供 n 字定义扫描用。
-        #   定义扫描按"ngram 与掩码相交即跳过"，而引用 ngram 的起点正是 X 首字，
-        #   故只盖首字即可把该引用 ngram 排除出定义集；同时固定窗口（n 或 12 字）
-        #   不会再越过较短的术语（如"所述装置"里的"装置"）把紧随其后的真实术语
-        #   （如"流量调节阀"）的首字也盖掉，导致后者无法登记为引用基础。
-        #   —— 这正是"明明有引用基础却报缺失"的根因。
-        suoshu_mask = [False] * text_len
-        ngram_mask = [False] * text_len
-        for p in suoshu_positions:
-            if p + 2 < text_len:
-                ngram_mask[p + 2] = True
+        refs = _find_references(text)
+        ref_starts = set()
+        for _, s in refs:
+            ref_starts.add(s)
+            q = _QUANTIFIER_RE.match(text, s)
+            if q:
+                ref_starts.add(q.end())
+        local = _collect_definitions(text, ref_starts, max_len)
+        defs[no] = local
+        seen = set()
+        for _, nums in groups:
+            for c in nums:
+                seen |= reported[c]
+        reported[no] = seen
+
+        # 权项文本里第 k 行 ↔ para_indices[k]；开头被剥掉的编号部分可能含换行
+        line_base = info.raw_text[:len(info.raw_text) - len(text)].count("\n")
+
+        def _candidate(st: int):
+            """从术语起点 st 按当前模式取 (起点, 术语, 回退下限 | None, 额外兜底术语)。"""
+            ord_len = _ordinal_len(text, st)
+            run = _cjk_run(text, st, ord_len + n)
+            core_len = len(run) - ord_len
+            fixed = run if len(run) >= 2 and core_len >= 1 else ""
+            n_term = run if core_len == n else ""
+            trunc = ""
             if use_dynamic_truncate:
-                t = _extract_term_dynamic_truncate(
-                    text, p + 2, bl_first_chars, bl_words, bl_lengths, max_len=DYN_MAX_LEN
-                )
-                trunc_term_cache[p] = t
-                ref_len = len(t) if t else n
-            else:
-                ref_len = DYN_MAX_LEN if dyn_mode else n
-            end = min(p + 2 + ref_len, text_len)
-            for k in range(p + 2, end):
-                suoshu_mask[k] = True
-        # 先扫一遍"非所述"上下文中的 n 字 CJK 子串 → 记入定义集
-        # 此处用 skip_noise=True 过滤掉含"的/在/是"等停用字的子串
-        # 预计算 next_suoshu[i] 用于 O(1) 重叠判断（基于只盖首字的 ngram_mask）
-        next_suoshu = [text_len] * (text_len + 1)
-        for i in range(text_len - 1, -1, -1):
-            next_suoshu[i] = i if ngram_mask[i] else next_suoshu[i + 1]
+                trunc = _trim_stopchars(_extract_term_dynamic_truncate(
+                    text, st, bl_first_chars, bl_words, bl_lengths, max_len=DYN_TERM_MAX_LEN
+                ))
+                if len(trunc) < 2 or len(trunc) <= ord_len:
+                    trunc = ""
 
-        built_short_lens = set()
-
-        def _short_map(L_sub: int) -> dict:
-            """惰性构建长度为 L_sub 的定义集（复用同一套 ngram_mask 排除引用）。
-
-            继承自被引权项的条目位置为 -1，扫描时不会被本权项内更晚的位置覆盖。
-            """
-            m = cur_short.setdefault(L_sub, {})
-            if L_sub not in built_short_lens:
-                built_short_lens.add(L_sub)
-                for seg_s, idx_s in _sliding_cjk_ngrams(text, L_sub, skip_noise=True):
-                    if seg_s in ignore_set:
-                        continue
-                    if next_suoshu[idx_s] < idx_s + L_sub:
-                        continue
-                    if seg_s not in m or idx_s < m[seg_s]:
-                        m[seg_s] = idx_s
-            return m
-
-        for seg, idx in _sliding_cjk_ngrams(text, n, skip_noise=True):
-            if seg in ignore_set:
-                continue
-            # 如果该子串位于"所述 + seg"的窗口内 → 视为引用，不当作首次定义
-            if next_suoshu[idx] < idx + n:
-                continue
-            # 只记录首次（最早）出现位置，用于后续"前向引用"比较
-            if seg not in cur_defined_pos or idx < cur_defined_pos[seg]:
-                cur_defined_pos[seg] = idx
-        # 动态模式：额外收集变长子串作为"自由形式"定义集（{子串: 首次位置}）
-        if dyn_mode:
-            for t, pos in _collect_freeform_terms(text, suoshu_mask).items():
-                prev = cur_defined_free_pos.get(t)
-                if prev is None or pos < prev:
-                    cur_defined_free_pos[t] = pos
-
-        # ── 提取每个 "所述" 后的术语并校验 ──
-        for p in suoshu_positions:
-            # 1) 默认 n 字术语（用于既不开截断也不开回退、或回退单独使用时）
-            term_chars = []
-            for k in range(p + 2, text_len):
-                ch = text[k]
-                if _CJK_RE.match(ch):
-                    term_chars.append(ch)
-                    if len(term_chars) == n:
-                        break
-                else:
-                    break
-            n_term = "".join(term_chars) if len(term_chars) == n else ""
-            # "所述"后的 CJK 段不足 n 字时（如 n=6 而原文是「所述壳体，」），
-            # 旧实现 n_term="" → continue，该处**完全不检查**。这里保留实际可用的
-            # ≥2 字形式作为短术语通道，配合 _defined_before 的分档定义集使用。
-            short_term = "".join(term_chars) if 2 <= len(term_chars) < n else ""
-
-            # 2) 动态截断术语（只要开了截断就要算；已在上面缓存原始串）
-            #    尾部停用字（的 / 上 / 中 …）在这里剪掉，剪之后才是真正的部件名；
-            #    掩码宽度仍按未剪的原始长度算，覆盖完整的"所述X"引用短语。
-            trunc_term = (
-                _trim_stopchars(trunc_term_cache.get(p, ""))
-                if use_dynamic_truncate else ""
-            )
-
-            def _fallback_hit(base: str) -> bool:
-                """从右向左逐字缩短 base，任一前缀（含自身，最短到 2 字）命中即放过。"""
-                for L_try in range(len(base), 1, -1):
-                    sub = base[:L_try]
-                    if sub in ignore_set or _defined_before(sub, p):
-                        return True
-                return False
-
-            # 决定本次"所述"的报告策略
             if not use_dynamic_truncate and not use_dynamic_fallback:
-                # 默认：n 字定值；不足 n 字时退到实际可用的短术语
-                base_term = n_term or short_term
-                if not base_term:
+                if not fixed or _is_noisy_fixed_term(fixed[ord_len:]):
+                    return None
+                return st, fixed, None, ""
+            if use_dynamic_truncate and not use_dynamic_fallback:
+                base = trunc if trunc and len(trunc) - ord_len <= DYN_TRUNC_SOFT_MAX else fixed
+                if not base or _is_all_stopchars(base):
+                    return None
+                return st, base, None, ""
+            base = trunc or fixed
+            if not base or _is_all_stopchars(base):
+                return None
+            floor = min(len(base), ord_len + 2) if ord_len else 2
+            return st, base, floor, (n_term if use_dynamic_truncate else "")
+
+        for p, s in refs:
+            starts = [s]
+            q = _QUANTIFIER_RE.match(text, s)
+            if q and q.end() > s:
+                starts.append(q.end())
+            cands = [c for c in map(_candidate, starts) if c]
+            if not cands:
+                continue
+
+            def _local_before(term: str) -> bool:
+                dp = local.get(term)
+                return dp is not None and dp < p
+
+            def _passes(cand, lookup) -> bool:
+                _, base, floor, extra = cand
+                if floor is None:
+                    tries = (base,)
+                else:
+                    tries = [base[:k] for k in range(len(base), floor - 1, -1)]
+                if any(t in ignore_set or lookup(t) for t in tries):
+                    return True
+                return bool(extra) and lookup(extra)
+
+            lookup_all = lambda t: _local_before(t) or _inherited(no, t)
+            if any(_passes(c, lookup_all) for c in cands):
+                continue
+            # 回退模式下报错意味着连最短前缀都没定义，问题实质是那个前缀：
+            # 用它做去重 / 忽略键，「所述齿圈套…」「所述齿圈与…」只报一条
+            keys = [c[1][:c[2]] if c[2] else c[1] for c in cands]
+            if any(k in seen for k in keys):
+                continue
+
+            st, base, _, _ = cands[0]
+            term = keys[0]
+            seen.add(term)
+            anchor = text[p:st + len(base)]
+
+            # 择一引用：找出在哪些被引权项的引用链里有、哪些没有
+            have, miss = [], []
+            for need_all, nums in groups:
+                if not need_all or len(nums) < 2:
                     continue
-                if base_term in ignore_set or _is_noisy_ngram(base_term):
-                    continue
-                if _defined_before(base_term, p):
-                    continue
-            elif use_dynamic_truncate and not use_dynamic_fallback:
-                # 仅截断：以截断结果为准，但两端都要兜底——
-                #   • 退化（<2 字）：黑名单词打头的常见部件名（所述安装座…），
-                #     旧实现整条跳过 → 漏检；
-                #   • 溢出（> DYN_TRUNC_SOFT_MAX 字）：黑名单没覆盖住的动词，
-                #     截出的长串报出来必是误判。
-                # 两种情况都回落到 n 字定值术语，交给常规滑窗判断。
-                base_term = (
-                    trunc_term
-                    if 2 <= len(trunc_term) <= DYN_TRUNC_SOFT_MAX
-                    else (n_term or short_term)
+                for c in nums:
+                    ok = any(
+                        _passes(cd, lambda t, c=c: _local_before(t) or _has(c, t))
+                        for cd in cands
+                    )
+                    (have if ok else miss).append(c)
+            if have and miss:
+                message = (
+                    f"『{anchor}』在引用权利要求 {'、'.join(map(str, miss))} 时缺少引用基础"
+                    f"（仅权利要求 {'、'.join(map(str, have))} 中有）"
                 )
-                if not base_term or len(base_term) < 2:
-                    continue
-                if base_term in ignore_set or _is_all_stopchars(base_term):
-                    continue
-                if _defined_before(base_term, p):
-                    continue
-            elif use_dynamic_fallback and not use_dynamic_truncate:
-                # 仅回退：从 n 字（不足则用短术语）开始往下缩
-                base_term = n_term or short_term
-                if not base_term or len(base_term) < 2:
-                    continue
-                if base_term in ignore_set or _is_all_stopchars(base_term):
-                    continue
-                if _fallback_hit(base_term):
-                    continue
             else:
-                # 同时开启：先截断，再回退；只要任一前缀匹配就放过
-                # 这是误判最低的组合策略
-                base_term = trunc_term
-                if len(base_term) < 2:
-                    # 截断失败 / 退化时回落为 n 字或短术语
-                    base_term = n_term or short_term
-                if not base_term or len(base_term) < 2:
-                    continue
-                if base_term in ignore_set or _is_all_stopchars(base_term):
-                    continue
-                if _fallback_hit(base_term):
-                    continue
-                # 还要再多一道兜底：base_term 的最末字往往是边界字，
-                # 单独再用 n_term（n 字定值）兜一遍可避免漏放过同义噪声
-                if n_term and _defined_before(n_term, p):
-                    continue
+                message = f"『{anchor}』缺少引用基础"
 
-            missing_term = base_term
-            ctx_term_len = len(base_term)
-
+            line = line_base + text.count("\n", 0, p)
+            if info.para_indices:
+                para_idx = info.para_indices[min(line, len(info.para_indices) - 1)]
+            else:
+                para_idx = -1
             start = max(0, p - 8)
-            end = min(len(text), p + 2 + ctx_term_len + 8)
-            ctx = text[start:end].replace("\n", " ")
+            end = min(len(text), st + len(base) + 8)
             results.append({
                 "kind": "antecedent",
                 "claim_no": no,
-                "para_idx": info.para_indices[0] if info.para_indices else -1,
-                "context": ctx,
-                "message": f"『所述{missing_term}』缺少引用基础",
+                "para_idx": para_idx,
+                "context": text[start:end].replace("\n", " "),
+                "message": message,
                 "suggestion": "",
+                "term": term,
+                "anchor": anchor,
             })
-        # 写回
-        defined_pos_by_claim[no] = cur_defined_pos
-        defined_free_pos_by_claim[no] = cur_defined_free_pos
-        defined_short_by_claim[no] = cur_short
     return results
 
 

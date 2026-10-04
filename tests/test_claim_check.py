@@ -162,6 +162,143 @@ def test_truncate_overrun_falls_back():
     print("[OK] 截断溢出回落，不再报出整句长串")
 
 
+_ALL_MODES = [
+    dict(use_dynamic_truncate=False, use_dynamic_fallback=False),
+    dict(use_dynamic_truncate=False, use_dynamic_fallback=True),
+    dict(use_dynamic_truncate=True, use_dynamic_fallback=False),
+    dict(use_dynamic_truncate=True, use_dynamic_fallback=True),
+]
+
+
+def _each_mode(lines, n=2):
+    from config.config_manager import get_builtin_boundary_blacklist
+    bl = get_builtin_boundary_blacklist()
+    for kw in _ALL_MODES:
+        yield kw, _antecedent(lines, n, boundary_blacklist=bl, **kw)
+
+
+def test_alternative_dependency_needs_basis_in_every_branch():
+    """择一引用「权利要求1或2」：只在权2 引入的术语，与权1 组合时没有引用基础。"""
+    lines = [
+        "1.一种装置，其特征在于，包括壳体。",
+        "2.根据权利要求1所述的装置，其特征在于，还包括弹簧。",
+        "3.根据权利要求1或2所述的装置，其特征在于，所述弹簧套设于所述壳体。",
+    ]
+    for kw, msgs in _each_mode(lines):
+        hit = [m for m in msgs if "弹簧" in m]
+        assert hit and "权利要求 1" in hit[0], f"{kw} 应指出引用权1 时缺少基础：{msgs}"
+        assert not [m for m in msgs if "壳体" in m], f"{kw} 壳体在两条分支都有定义：{msgs}"
+    print("[OK] 择一引用：术语须在每条被引分支都有定义")
+
+
+def test_suoshu_de_form():
+    """「所述的X」与「所述X」同等对待：有基础不报，无基础要报。"""
+    lines = ["1.一种装置，其特征在于，包括壳体和底座；"
+             "所述的壳体固定于所述的底座，所述的齿圈套设于所述的壳体。"]
+    for kw, msgs in _each_mode(lines):
+        assert msgs == {"『所述的齿圈』缺少引用基础"}, f"{kw}：{msgs}"
+    print("[OK] 所述的X：有基础不误报，无基础照报")
+
+
+def test_fixed_mask_does_not_swallow_following_term():
+    """「所述多源合束器（5）为二向色镜」里首次出现的二向色镜应登记为定义。"""
+    lines = ["1.一种系统，其特征在于，包括多源合束器（5）；"
+             "所述多源合束器（5）为二向色镜，所述二向色镜设定为透射光束。"]
+    for n in (2, 4):
+        for kw, msgs in _each_mode(lines, n):
+            assert not [m for m in msgs if "二向" in m], f"n={n} {kw} 误报：{msgs}"
+    print("[OK] 被引术语之后紧跟的首次定义不再被掩码吞掉")
+
+
+def test_inherited_short_term():
+    """n 大于术语长度时，父权项里定义的短术语照样能被从属权项继承。"""
+    lines = [
+        "1.一种装置，其特征在于，包括壳体。",
+        "2.根据权利要求1所述的装置，其特征在于，所述壳体。",
+    ]
+    for n in (3, 4, 6):
+        assert not _antecedent(lines, n), f"n={n} 误报继承来的短术语"
+    print("[OK] 短术语可跨权项继承")
+
+
+def test_ordinal_term():
+    """「所述第三弹簧」：只定义了第一 / 第二弹簧时要报，不能被「第三光路」的「第三」放过。"""
+    lines = ["1.一种装置，其特征在于，包括第一弹簧、第二弹簧和第三光路；"
+             "所述第一弹簧与所述第三弹簧连接。"]
+    for kw, msgs in _each_mode(lines):
+        assert any("第三弹簧" in m for m in msgs), f"{kw} 漏报第三弹簧：{msgs}"
+        assert not any("第一弹簧" in m for m in msgs), f"{kw} 误报第一弹簧：{msgs}"
+    print("[OK] 序数术语参与检查且回退不缩进序数")
+
+
+def test_positional_head_term_checked_in_default_mode():
+    """默认模式下方位字打头的部件名（上盖）也参与检查。"""
+    msgs = _antecedent(["1.一种装置，其特征在于，包括壳体；所述上盖盖合于所述壳体。"], 2)
+    assert msgs == {"『所述上盖』缺少引用基础"}, msgs
+    print("[OK] 方位字打头的术语参与默认模式检查")
+
+
+def test_quantifier_prefix():
+    """「包括若干连接杆；所述多个连接杆」剥掉数量前缀后有引用基础。"""
+    lines = ["1.一种装置，其特征在于，包括若干连接杆；所述多个连接杆均匀分布。"]
+    for kw, msgs in _each_mode(lines):
+        assert not msgs, f"{kw} 误报：{msgs}"
+    print("[OK] 数量前缀剥离后匹配")
+
+
+def test_missing_term_reported_once():
+    """同一缺失术语：本权项多处 + 从属权项，只在首处报一条。"""
+    lines = [
+        "1.一种装置，其特征在于，包括壳体；所述齿圈套设于所述壳体，"
+        "所述齿圈与所述壳体之间设有间隙，所述齿圈为钢制。",
+        "2.根据权利要求1所述的装置，其特征在于，所述齿圈为钢制。",
+    ]
+    from config.config_manager import get_builtin_boundary_blacklist
+    bl = get_builtin_boundary_blacklist()
+    for n in (2, 3):
+        for kw in _ALL_MODES:
+            shells = [_Shell(t) for t in lines]
+            claims, _ = parse_claims_ex(shells, 0, len(shells))
+            res = check_antecedent_basis(claims, n, set(), boundary_blacklist=bl, **kw)
+            assert len(res) == 1 and res[0]["claim_no"] == 1, f"n={n} {kw}：{[r['message'] for r in res]}"
+    print("[OK] 缺失术语只报首处")
+
+
+def test_result_points_at_actual_paragraph():
+    """结果的 para_idx 指向「所述X」所在段，anchor 是原文里能搜到的字面串。"""
+    shells = [_Shell(t) for t in [
+        "1.一种装置，其特征在于，包括：",
+        "壳体；",
+        "所述的齿圈套设于所述壳体。",
+    ]]
+    claims, _ = parse_claims_ex(shells, 0, len(shells))
+    res = check_antecedent_basis(claims, 2, set())
+    assert len(res) == 1, res
+    assert res[0]["para_idx"] == 2 and res[0]["anchor"] == "所述的齿圈" and res[0]["term"] == "齿圈", res
+    assert check_antecedent_basis(claims, 2, {"齿圈"}) == [], "忽略词应生效"
+    print("[OK] 结果定位到实际段落，anchor / term 字段正确")
+
+
+def test_citation_formula_variants():
+    """「之一」「中的任一项」引用语能被识别为从属关系；长编号串里的「所述」不当术语引用。"""
+    from core.claim_check import run_all_checks
+    lines = [
+        "1.一种装置，其特征在于，包括壳体。",
+        "2.根据权利要求1所述的装置，其特征在于，还包括盖板。",
+        "3.根据权利要求1或2之一所述的装置，其特征在于，所述壳体为金属。",
+        "4.根据权利要求1至3中的任一项所述的装置，其特征在于，所述壳体为金属。",
+        "5.根据权利要求1、2、3或4中任一项所述的装置，其特征在于，所述壳体为金属。",
+    ]
+    shells = [_Shell(t) for t in lines]
+    claims, _ = parse_claims_ex(shells, 0, len(shells))
+    assert claims[3].cites == {1, 2} and claims[4].cites == {1, 2, 3}, {k: v.cites for k, v in claims.items()}
+    res = run_all_checks(shells, 0, len(shells), n=2, use_dynamic_truncate=True,
+                         use_dynamic_fallback=True, boundary_blacklist=[])
+    assert not [r for r in res if r["kind"] == "antecedent"], res
+    assert not [r for r in res if "任一项" in r["message"]], "「之一」已写明择一，不应再提示补「任一项」"
+    print("[OK] 引用语变体（之一 / 中的任一项 / 长编号串）")
+
+
 def test_vague_overlapping_words_report_once():
     """重叠的不确定用语（优选/优选地、基本/基本上、大约/约为）只报一条。"""
     from core.claim_check import check_vague_terms, ClaimInfo
@@ -184,5 +321,15 @@ if __name__ == "__main__":
     test_dynamic_truncate_boundaries()
     test_short_term_channel()
     test_truncate_overrun_falls_back()
+    test_alternative_dependency_needs_basis_in_every_branch()
+    test_suoshu_de_form()
+    test_fixed_mask_does_not_swallow_following_term()
+    test_inherited_short_term()
+    test_ordinal_term()
+    test_positional_head_term_checked_in_default_mode()
+    test_quantifier_prefix()
+    test_missing_term_reported_once()
+    test_result_points_at_actual_paragraph()
+    test_citation_formula_variants()
     test_vague_overlapping_words_report_once()
     print("\nAll claim_check antecedent tests passed.")

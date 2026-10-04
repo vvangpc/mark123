@@ -2507,6 +2507,8 @@ class MainWindow(QMainWindow):
         antecedent / vague 优先取 message 里『…』内的术语（所述X / W）；
         其余类型回退取 context 的最长非空白片段（引用片段、句末片段等）。
         """
+        if item.get("anchor"):
+            return item["anchor"]
         kind = item.get("kind")
         msg = item.get("message", "")
         if kind in ("antecedent", "vague"):
@@ -2567,9 +2569,12 @@ class MainWindow(QMainWindow):
 
         session_adds = []
         if kind == "antecedent":
-            m = _re.search(r'『所述(.+?)』', msg)
-            if m:
-                session_adds.append(m.group(1))
+            if item.get("term"):
+                session_adds.append(item["term"])
+            else:
+                m = _re.search(r'『所述(.+?)』', msg)
+                if m:
+                    session_adds.append(m.group(1))
 
         for w in session_adds:
             if w:
@@ -2588,8 +2593,10 @@ class MainWindow(QMainWindow):
             for i, r in enumerate(self._claim_results):
                 if i == row or r.get("kind") != kind:
                     continue
-                r_msg = r.get("message", "")
-                if any(w and w in r_msg for w in session_adds):
+                if r.get("term"):
+                    if r["term"] in session_adds:
+                        removed_indices.add(i)
+                elif any(w and w in r.get("message", "") for w in session_adds):
                     removed_indices.add(i)
         self._claim_results = [
             r for i, r in enumerate(self._claim_results) if i not in removed_indices
