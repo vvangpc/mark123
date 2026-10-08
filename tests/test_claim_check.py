@@ -231,6 +231,42 @@ def test_ordinal_term():
     print("[OK] 序数术语参与检查且回退不缩进序数")
 
 
+def test_short_term_followed_by_unlisted_verb():
+    """「第一侧 / 第二侧」序数 + 单字名词、「温区沿…」后接非黑名单动词：前文独立出现过就不误报。
+
+    现场：FE26Y3157 二次回流装配方法。
+    """
+    lines = [
+        "1.一种装配方法，其特征在于，包括：对装配体的第一侧和第二侧分别加热；"
+        "其中，所述第一侧为所述装配体的一侧，对所述第二侧加热的设置温度高于对所述第一侧加热的设置温度。",
+        "2.根据权利要求1所述的方法，其特征在于，回流炉具有多个温区，多个所述温区沿传送方向依次排布，"
+        "每个所述温区均包括上温区，所述装配体以所述第一侧朝上、所述第二侧朝下的姿态通过所述回流炉。",
+        "3.根据权利要求1所述的方法，其特征在于，器件的底面设置有端子，所述端子沿所述底面相对的两条侧边排布，"
+        "第一方向为端子的排列方向，所述第二方向垂直于所述第一方向。",
+    ]
+    for n in (2, 3, 4):
+        for kw, msgs in _each_mode(lines, n):
+            bad = [m for m in msgs if "第二方向" not in m]
+            assert not bad, f"n={n} {kw} 误报：{msgs}"
+            # 第二方向 从未引入，照报
+            assert any("第二方向" in m for m in msgs), f"n={n} {kw} 漏报第二方向：{msgs}"
+    print("[OK] 序数 + 单字名词 / 短术语后接非黑名单动词不误报")
+
+
+def test_short_prefix_only_inside_longer_term_still_flagged():
+    """较短前缀只在更长的词里出现过（安装板 里的 安装、第一侧板 里的 第一侧）不能放过。"""
+    cases = [
+        ("1.一种装置，其特征在于，包括安装板；所述安装座固定于所述安装板。", "安装座"),
+        ("1.一种装置，其特征在于，包括第一侧板；所述第一侧盖固定于所述第一侧板。", "第一侧盖"),
+    ]
+    for line, term in cases:
+        for kw, msgs in _each_mode([line], 3):
+            if kw["use_dynamic_fallback"]:
+                continue   # 回退模式本就按任意已定义前缀放过
+            assert any(term in m for m in msgs), f"{kw} 漏报{term}：{msgs}"
+    print("[OK] 只在长词里出现过的前缀不当作引用基础")
+
+
 def test_positional_head_term_checked_in_default_mode():
     """默认模式下方位字打头的部件名（上盖）也参与检查。"""
     msgs = _antecedent(["1.一种装置，其特征在于，包括壳体；所述上盖盖合于所述壳体。"], 2)
@@ -321,11 +357,11 @@ def test_ignore_marks_matches_unmarked_text():
     from config.config_manager import get_builtin_boundary_blacklist
     plain = [
         "1.一种装置，其特征在于，包括齿圈、夹指和齿圈座；所述齿圈座套设于所述齿轴，",
-        "所述夹指与所述齿圈连接",
+        "所述夹指与所述齿圈连接，所述齿轮轴穿过所述夹指",
     ]
     marked = [
         "1.一种装置，其特征在于，包括齿圈（1）、夹指（2）和齿圈（1）座；所述齿圈（1）座套设于所述齿轴，",
-        "所述夹指（2）与所述齿圈（1）连接",
+        "所述夹指（2）与所述齿圈（1）连接，所述齿轮（3）轴穿过所述夹指（2）",
     ]
     marks = {1: "齿圈", 2: "夹指"}
     bl = get_builtin_boundary_blacklist()
@@ -340,14 +376,16 @@ def test_ignore_marks_matches_unmarked_text():
                     assert any(r["anchor"] in marked[i] for i in range(r["para_idx"], 2)), r
     res = run_all_checks([_Shell(t) for t in marked], 0, 2, n=4, ignore_marks=True, marks=marks)
     anchors = {r["message"]: r.get("anchor") for r in res}
-    assert anchors["『所述齿圈座套』缺少引用基础"] == "所述齿圈（1）座套", anchors
+    # 齿圈座 前文独立出现过（齿圈（1）座；），定长多带的"套"不再误报
+    assert "『所述齿圈座套』缺少引用基础" not in anchors, anchors
+    assert anchors["『所述齿轮轴穿』缺少引用基础"] == "所述齿轮（3）轴穿", anchors
     ending = next(r for r in res if r["kind"] == "ending")
-    assert ending["para_idx"] == 1 and ending["anchor"] == "所述夹指（2）与所述齿圈（1）连接", ending
-    # 推荐组合（截断+回退）：齿圈座 有引用基础，只报真正缺的 齿轴
+    assert ending["para_idx"] == 1 and ending["anchor"] == "指（2）与所述齿圈（1）连接，所述齿轮（3）轴穿过所述夹指", ending
+    # 推荐组合（截断+回退）：齿圈座 有引用基础，只报真正缺的 齿轴 / 齿轮轴
     res = run_all_checks([_Shell(t) for t in marked], 0, 2, n=2, boundary_blacklist=bl,
                          use_dynamic_truncate=True, use_dynamic_fallback=True,
                          ignore_marks=True, marks=marks)
-    assert [r["message"] for r in res if r["kind"] == "antecedent"] == ["『所述齿轴』缺少引用基础"], res
+    assert [r["message"] for r in res if r["kind"] == "antecedent"] == ["『所述齿轴』缺少引用基础", "『所述齿轮轴』缺少引用基础"], res
     print("[OK] 忽略标记：结果与未标注一致，定位锚点映射回原文")
 
 
@@ -378,6 +416,8 @@ if __name__ == "__main__":
     test_fixed_mask_does_not_swallow_following_term()
     test_inherited_short_term()
     test_ordinal_term()
+    test_short_term_followed_by_unlisted_verb()
+    test_short_prefix_only_inside_longer_term_still_flagged()
     test_positional_head_term_checked_in_default_mode()
     test_quantifier_prefix()
     test_missing_term_reported_once()

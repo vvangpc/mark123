@@ -1,4 +1,4 @@
-# 📌 专利标记助手 V4.4.0
+# 📌 专利标记助手 V4.4.1
 
 一款为专利代理人 / 审查员打造的桌面端 `.docx` 处理工具。围绕「撰写 → 自查 → 标注 → 生成」全链路，
 把 **附图标记自动标注、文本清洗、标点检查、错别字 / 重复字词检查、权利要求书引用审查、说明书检查**
@@ -11,8 +11,11 @@
 ![Python](https://img.shields.io/badge/Python-3.10%2B-blue)
 ![UI](https://img.shields.io/badge/PyQt6-GUI-green)
 ![docx](https://img.shields.io/badge/python--docx-XML--safe-orange)
-![Release](https://img.shields.io/badge/Release-V4.4.0-brightgreen)
+![Release](https://img.shields.io/badge/Release-V4.4.1-brightgreen)
 
+> 🆕 **V4.4.1** — 引用基础检查修复一类高频误报：`所述第一侧加热`、`所述温区沿传送方向` 这类
+> 「已定义的短术语 + 未收录动词」不再报缺失；只在长词里出现过的前缀仍照报。
+>
 > 🆕 **V4.4.0** — **权利要求引用基础判定重写 + 先标注后检查**。
 > - 择一引用（`权利要求1或2`）要求术语在**每条**被引分支都有定义——只在一个分支引入的特征终于能查出来；
 >   `所述的X`、序数术语、引用语变体、固定掩码误报等一并修好。

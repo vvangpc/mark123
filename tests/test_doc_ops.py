@@ -249,9 +249,10 @@ def test_claim_check_ignores_marks_in_ui():
     app = QApplication.instance() or QApplication(sys.argv)
     path = _make_docx([
         "权利要求书",
-        "1.一种装置，其特征在于，包括齿圈（1）和齿圈（1）座；所述齿圈（1）座套设于所述齿轴。",
+        "1.一种装置，其特征在于，包括齿圈（1）和齿圈（1）座；所述齿圈（1）座套设于所述齿轴，"
+        "所述齿轮（2）轴穿过所述齿圈（1）。",
         "附图说明",
-        "附图标记：1-齿圈。",
+        "附图标记：1-齿圈；2-齿轮。",
     ])
     win = MainWindow()
     win._show_toast = lambda *a, **k: None
@@ -261,16 +262,18 @@ def test_claim_check_ignores_marks_in_ui():
     win.claim_dyn_fb_cb.setChecked(True)
     win._on_claim_check_start()
     msgs = [r["message"] for r in win._claim_results]
-    assert msgs == ["『所述齿轴』缺少引用基础"], msgs
+    assert msgs == ["『所述齿轴』缺少引用基础", "『所述齿轮轴』缺少引用基础"], msgs
     assert win._locate_claim_in_content(0) is None and win.content_area._active_issue
 
-    # 定长 4 字：「所述齿圈（1）座套」去标记后取「齿圈座套」，锚点映射回带标记的原文
+    # 定长 4 字：「所述齿轮（2）轴穿」去标记后取「齿轮轴穿」，锚点映射回带标记的原文；
+    # 齿圈座 前文独立出现过，多带的"套"不误报
     win.claim_dyn_trunc_cb.setChecked(False)
     win.claim_dyn_fb_cb.setChecked(False)
     win._claim_n = 4
     win._on_claim_check_start()
-    r = next(r for r in win._claim_results if "齿圈座" in r["message"])
-    assert r["anchor"] == "所述齿圈（1）座套", r
+    assert not any("齿圈座" in r["message"] for r in win._claim_results), win._claim_results
+    r = next(r for r in win._claim_results if "齿轮轴" in r["message"])
+    assert r["anchor"] == "所述齿轮（2）轴穿", r
     assert win.content_area.locate_claim_issue(r["para_idx"], r["anchor"])
     win._unsaved = False
     win.close()

@@ -80,7 +80,7 @@ DEFAULT_BOUNDARY_BLACKLIST = [
     "判断", "得到", "转动", "配置", "调制", "遮挡",
     "乘以", "除以", "作用于", "作用下",
     # ── 连词/助词/介词类 ──
-    "与其", "和其", "及其", "或者",
+    "与其", "和其", "及其", "或者", "分别",
 ]
 
 
@@ -488,14 +488,15 @@ def _is_all_stopchars(seg: str) -> bool:
     return bool(seg) and all(ch in _STOPCHARS for ch in seg)
 
 
-def _trim_stopchars(seg: str) -> str:
-    """去掉术语尾部的助词 / 单字方位词。
+def _trim_stopchars(seg: str, keep: int = 0) -> str:
+    """去掉术语尾部的助词 / 单字方位词，至多剪到剩 keep 个字。
 
     动态截断常停在双字方位词之前，尾字往往是「的 / 上 / 中」等
     （安装座上、连接杆的），剪掉之后才是真正的部件名。
+    keep 用来护住「第一侧 / 第二面」这类序数 + 单字方位名词的那一个字。
     """
     i = len(seg)
-    while i > 0 and seg[i - 1] in _TRIM_TAIL_CHARS:
+    while i > keep and seg[i - 1] in _TRIM_TAIL_CHARS:
         i -= 1
     return seg[:i]
 
@@ -584,6 +585,39 @@ def _collect_definitions(text: str, ref_starts: set, max_len: int) -> dict:
     return out
 
 
+def _collect_standalone_definitions(text: str, ref_starts: set, max_len: int,
+                                    bl_words: set, bl_lengths) -> dict:
+    """与 _collect_definitions 同口径，但只收**右侧到边界**的子串 → 首次出现位置。
+
+    边界：非 CJK / 单字虚词 / 黑名单词 / 「所述」。用来认「较短术语」：
+    「对所述装配体的第一侧和第二侧分别加热」里的 第一侧、第二侧 右侧都到了边界，
+    能为「所述第一侧加热 / 所述第二侧朝下」提供引用基础；而「安装板」里的 安装
+    右侧是"板"，不会被拿来放过「所述安装座」。
+    """
+    out: dict = {}
+    L = len(text)
+    i = 0
+    while i < L:
+        if not _CJK_RE.match(text[i]):
+            i += 1
+            continue
+        j = i
+        while j < L and _CJK_RE.match(text[j]):
+            j += 1
+        for e in range(i + 2, j + 1):
+            if e < j and not (
+                text[e] in _TRUNC_BOUNDARY_CHARS
+                or text.startswith("所述", e)
+                or any(text[e:e + n] in bl_words for n in bl_lengths)
+            ):
+                continue
+            for k in range(max(i, e - max_len), e - 1):
+                if k not in ref_starts:
+                    out.setdefault(text[k:e], k)
+        i = j
+    return out
+
+
 # ─────────────────────────────────────────
 # 动态截断 / 动态回退 辅助
 # ─────────────────────────────────────────
@@ -622,7 +656,7 @@ def _extract_term_dynamic_truncate(text: str, start: int,
         keep = min_keep + 2
     while k < L and len(out) < max_len:
         ch = text[k]
-        if not _CJK_RE.match(ch):
+        if not _CJK_RE.match(ch) or text.startswith("所述", k):
             break
         # 检查从位置 k 起是否命中黑名单的某个词
         # 黑名单首字命中是必要条件，再做一次完整匹配以避免误伤
@@ -684,26 +718,30 @@ def check_antecedent_basis(claims: dict, n: int, ignore_set: set,
     results = []
     ignore_set = set(ignore_set or ())
     bl_first_chars, bl_words, bl_lengths = _build_blacklist_lookup(boundary_blacklist or [])
+    # 认「独立出现的较短术语」时的右边界：不管截断开没开，都用内置 + 用户黑名单
+    _, st_words, st_lengths = _build_blacklist_lookup(
+        set(DEFAULT_BOUNDARY_BLACKLIST) | set(boundary_blacklist or ()))
     # 定义集子串上限：要能容纳「序数 + n 字」与截断术语
     max_len = max(DYN_TERM_MAX_LEN, n) + 4
 
     defs: dict = {}        # {claim_no: {term: 本权项内首次位置}}
+    stand: dict = {}       # {claim_no: {右侧到边界的 term: 本权项内首次位置}}
     groups_of: dict = {}   # {claim_no: [(须全部满足?, [被引权项…])]}
     reported: dict = {}    # {claim_no: 本权项及其引用链上已报过的术语}
     memo: dict = {}
 
-    def _has(c: int, term: str) -> bool:
-        """term 是否在权项 c 的完整引用链（含 c 自身全文）中有定义。"""
-        key = (c, term)
+    def _has(c: int, term: str, tbl=defs) -> bool:
+        """term 是否在权项 c 的完整引用链（含 c 自身全文）中有定义（tbl 为 defs / stand）。"""
+        key = (c, term, tbl is stand)
         hit = memo.get(key)
         if hit is None:
-            hit = term in defs[c] or _inherited(c, term)
+            hit = term in tbl[c] or _inherited(c, term, tbl)
             memo[key] = hit
         return hit
 
-    def _inherited(no: int, term: str) -> bool:
+    def _inherited(no: int, term: str, tbl=defs) -> bool:
         for need_all, nums in groups_of[no]:
-            if (all if need_all else any)(_has(c, term) for c in nums):
+            if (all if need_all else any)(_has(c, term, tbl) for c in nums):
                 return True
         return False
 
@@ -726,6 +764,8 @@ def check_antecedent_basis(claims: dict, n: int, ignore_set: set,
                 ref_starts.add(q.end())
         local = _collect_definitions(text, ref_starts, max_len)
         defs[no] = local
+        local_st = _collect_standalone_definitions(text, ref_starts, max_len, st_words, st_lengths)
+        stand[no] = local_st
         seen = set()
         for _, nums in groups:
             for c in nums:
@@ -746,7 +786,7 @@ def check_antecedent_basis(claims: dict, n: int, ignore_set: set,
             if use_dynamic_truncate:
                 trunc = _trim_stopchars(_extract_term_dynamic_truncate(
                     text, st, bl_first_chars, bl_words, bl_lengths, max_len=DYN_TERM_MAX_LEN
-                ))
+                ), ord_len + 1 if ord_len else 0)
                 if len(trunc) < 2 or len(trunc) <= ord_len:
                     trunc = ""
 
@@ -774,11 +814,11 @@ def check_antecedent_basis(claims: dict, n: int, ignore_set: set,
             if not cands:
                 continue
 
-            def _local_before(term: str) -> bool:
-                dp = local.get(term)
+            def _local_before(term: str, tbl=local) -> bool:
+                dp = tbl.get(term)
                 return dp is not None and dp < p
 
-            def _passes(cand, lookup) -> bool:
+            def _passes(cand, lookup, lookup_st) -> bool:
                 _, base, floor, extra = cand
                 if floor is None:
                     tries = (base,)
@@ -786,10 +826,19 @@ def check_antecedent_basis(claims: dict, n: int, ignore_set: set,
                     tries = [base[:k] for k in range(len(base), floor - 1, -1)]
                 if any(t in ignore_set or lookup(t) for t in tries):
                     return True
-                return bool(extra) and lookup(extra)
+                if extra and lookup(extra):
+                    return True
+                # 较短前缀在前文**独立**出现过（右侧到边界）也算有基础：
+                # 定长 n 字 / 截断越界时「所述温区沿传送方向」「所述第一侧加热」
+                # 多带的字不该让真实术语 温区 / 第一侧 判成缺基础。
+                # 序数术语可缩到「第X + 1 字」（第一侧 / 第二面），裸序数不行。
+                o = _ordinal_len(base, 0)
+                return any(lookup_st(base[:k])
+                           for k in range(len(base) - 1, (o + 1 if o else 2) - 1, -1))
 
             lookup_all = lambda t: _local_before(t) or _inherited(no, t)
-            if any(_passes(c, lookup_all) for c in cands):
+            lookup_all_st = lambda t: _local_before(t, local_st) or _inherited(no, t, stand)
+            if any(_passes(c, lookup_all, lookup_all_st) for c in cands):
                 continue
             # 回退模式下报错意味着连最短前缀都没定义，问题实质是那个前缀：
             # 用它做去重 / 忽略键，「所述齿圈套…」「所述齿圈与…」只报一条
@@ -809,7 +858,8 @@ def check_antecedent_basis(claims: dict, n: int, ignore_set: set,
                     continue
                 for c in nums:
                     ok = any(
-                        _passes(cd, lambda t, c=c: _local_before(t) or _has(c, t))
+                        _passes(cd, lambda t, c=c: _local_before(t) or _has(c, t),
+                                lambda t, c=c: _local_before(t, local_st) or _has(c, t, stand))
                         for cd in cands
                     )
                     (have if ok else miss).append(c)
