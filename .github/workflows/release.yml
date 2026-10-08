@@ -52,6 +52,24 @@ jobs:
           "@
           Set-Content -Path version.py -Value $content -Encoding utf8
 
+      - name: Extract release notes from CHANGELOG
+        # GitHub Release 正文 = CHANGELOG.md 里本版本那一节（从「## … [x.y.z]」到下一个「## 」）。
+        # 放在构建之前：忘了写 CHANGELOG 就直接失败，不白跑 5 分钟构建。
+        shell: pwsh
+        run: |
+          $ver = '${{ steps.ver.outputs.version }}'
+          $lines = Get-Content CHANGELOG.md -Encoding utf8
+          $pat = '^## .*\[' + [regex]::Escape($ver) + '\]'
+          $start = -1
+          for ($i = 0; $i -lt $lines.Count; $i++) { if ($lines[$i] -match $pat) { $start = $i; break } }
+          if ($start -lt 0) { throw "CHANGELOG.md 里没有 [$ver] 这一节，先写更新日志再发版" }
+          $end = $lines.Count
+          for ($j = $start + 1; $j -lt $lines.Count; $j++) { if ($lines[$j] -match '^## ') { $end = $j; break } }
+          $text = ($lines[$start..($end - 1)] -join "`n").Trim()
+          $text = ($text -replace '(\n---\s*)+$', '').Trim()
+          Set-Content -Path release_notes.md -Value $text -Encoding utf8NoBOM
+          Get-Content release_notes.md -Encoding utf8
+
       - name: Install dependencies
         # requirements.txt 是 uv.lock 导出的精确版本，构建可复现
         run: pip install -r requirements.txt
@@ -134,7 +152,8 @@ jobs:
           files: |
             ${{ steps.meta.outputs.exe_path }}
             dist/latest.json
-          generate_release_notes: true
+          body_path: release_notes.md         # 正文取自 CHANGELOG（见上方 Extract 步骤）
+          generate_release_notes: true       # 末尾追加 Full Changelog 对比链接
           fail_on_unmatched_files: true
 
       - name: Upload build artifact (always)
