@@ -266,12 +266,12 @@ def test_claim_check_ignores_marks_in_ui():
     assert win._locate_claim_in_content(0) is None and win.content_area._active_issue
 
     # 定长 4 字：「所述齿轮（2）轴穿」去标记后取「齿轮轴穿」，锚点映射回带标记的原文；
-    # 齿圈座 前文独立出现过，多带的"套"不误报
+    # 默认模式不将「齿圈座套」隐式缩成「齿圈座」
     win.claim_dyn_trunc_cb.setChecked(False)
     win.claim_dyn_fb_cb.setChecked(False)
     win._claim_n = 4
     win._on_claim_check_start()
-    assert not any("齿圈座" in r["message"] for r in win._claim_results), win._claim_results
+    assert any("齿圈座套" in r["message"] for r in win._claim_results), win._claim_results
     r = next(r for r in win._claim_results if "齿轮轴" in r["message"])
     assert r["anchor"] == "所述齿轮（2）轴穿", r
     assert win.content_area.locate_claim_issue(r["para_idx"], r["anchor"])

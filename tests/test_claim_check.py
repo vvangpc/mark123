@@ -232,7 +232,7 @@ def test_ordinal_term():
 
 
 def test_short_term_followed_by_unlisted_verb():
-    """「第一侧 / 第二侧」序数 + 单字名词、「温区沿…」后接非黑名单动词：前文独立出现过就不误报。
+    """动态降噪模式能放过短术语后的动词；默认模式不再无条件缩短匹配。
 
     现场：FE26Y3157 二次回流装配方法。
     """
@@ -247,10 +247,13 @@ def test_short_term_followed_by_unlisted_verb():
     for n in (2, 3, 4):
         for kw, msgs in _each_mode(lines, n):
             bad = [m for m in msgs if "第二方向" not in m]
-            assert not bad, f"n={n} {kw} 误报：{msgs}"
+            if kw["use_dynamic_truncate"] or kw["use_dynamic_fallback"]:
+                assert not bad, f"n={n} {kw} 误报：{msgs}"
+            else:
+                assert any("第一侧" in m for m in bad), f"n={n} 默认模式不应隐式缩短：{msgs}"
             # 第二方向 从未引入，照报
             assert any("第二方向" in m for m in msgs), f"n={n} {kw} 漏报第二方向：{msgs}"
-    print("[OK] 序数 + 单字名词 / 短术语后接非黑名单动词不误报")
+    print("[OK] 短术语降噪仅在启用动态选项时生效，默认模式不隐式回退")
 
 
 def test_short_prefix_only_inside_longer_term_still_flagged():
@@ -296,8 +299,12 @@ def test_missing_term_reported_once():
             shells = [_Shell(t) for t in lines]
             claims, _ = parse_claims_ex(shells, 0, len(shells))
             res = check_antecedent_basis(claims, n, set(), boundary_blacklist=bl, **kw)
-            assert len(res) == 1 and res[0]["claim_no"] == 1, f"n={n} {kw}：{[r['message'] for r in res]}"
-    print("[OK] 缺失术语只报首处")
+            if n == 3 and not any(kw.values()):
+                # 默认模式按实际检查的字符串去重，不把「齿圈套」与「齿圈」合并。
+                assert [r["term"] for r in res] == ["齿圈套", "齿圈"], res
+            else:
+                assert len(res) == 1 and res[0]["claim_no"] == 1, f"n={n} {kw}：{[r['message'] for r in res]}"
+    print("[OK] 同一检查字符串只报首处，不将不同字符串强制缩成同一个键")
 
 
 def test_result_points_at_actual_paragraph():
@@ -376,8 +383,8 @@ def test_ignore_marks_matches_unmarked_text():
                     assert any(r["anchor"] in marked[i] for i in range(r["para_idx"], 2)), r
     res = run_all_checks([_Shell(t) for t in marked], 0, 2, n=4, ignore_marks=True, marks=marks)
     anchors = {r["message"]: r.get("anchor") for r in res}
-    # 齿圈座 前文独立出现过（齿圈（1）座；），定长多带的"套"不再误报
-    assert "『所述齿圈座套』缺少引用基础" not in anchors, anchors
+    # 默认模式不将「齿圈座套」自动缩成「齿圈座」；锚点仍正确映射回原文。
+    assert anchors["『所述齿圈座套』缺少引用基础"] == "所述齿圈（1）座套", anchors
     assert anchors["『所述齿轮轴穿』缺少引用基础"] == "所述齿轮（3）轴穿", anchors
     ending = next(r for r in res if r["kind"] == "ending")
     assert ending["para_idx"] == 1 and ending["anchor"] == "指（2）与所述齿圈（1）连接，所述齿轮（3）轴穿过所述夹指", ending

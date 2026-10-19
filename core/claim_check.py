@@ -14,7 +14,7 @@ claim_check.py — 权利要求书引用检查
 每条结果格式：
     {
         "kind":        "antecedent" / "dependency" /
-                       "vague" / "numbering" / "multi_dep" / "ending",
+                       "vague" / "numbering" / "multi_dep" / "ending" / "parse",
         "claim_no":    int | None,
         "para_idx":    int  (全文中的段落索引),
         "context":     str  (原文片段),
@@ -442,26 +442,10 @@ _STOPCHARS = set(
 )
 
 
-def _is_noisy_ngram(seg: str) -> bool:
-    """判断定长 ngram 是否为噪声（含任一停用字即丢弃）。
-
-    只适用于「定长滑窗」术语：长度固定为 n，夹到停用字的多半确实不是术语。
-    """
-    return any(ch in _STOPCHARS for ch in seg)
-
-
-# 方位 / 大小字打头时几乎总是部件名本身（上盖、下壳体、内筒、侧板、大齿轮…），
-# 夹在中间或尾部时才多半是越界（壳体上设…），故定长模式只对首字放行这几个字。
-_TERM_HEAD_OK = set("上下中内外前后左右侧大小")
-
-
-def _is_noisy_fixed_term(core: str) -> bool:
-    """定长 n 字模式下"所述"侧术语的噪声判据（core 为去掉序数前缀后的部分）。"""
-    if not core:
-        return True
-    if core[0] in _STOPCHARS and core[0] not in _TERM_HEAD_OK:
-        return True
-    return _is_noisy_ngram(core[1:])
+# 定长检查遇到明确的语法连接字时，检查边界前的短术语，不能丢弃整条引用。
+# 不使用宽泛的停用字表：「件」「地」「对」「从」都可能是术语的一部分，
+# 如连接件、接地端子、对接头、从动齿轮。此规则不依赖动态截断黑名单。
+_FIXED_BOUNDARY_CHARS = set("的之与和或及并且而则但在于被将把以由向为是有")
 
 
 # 序数前缀「第X」里 X 的取值（「第一连接件」的 min_keep 跨越判定用）
@@ -481,8 +465,8 @@ def _is_all_stopchars(seg: str) -> bool:
     """整串都是停用字 → 肯定不是技术术语。
 
     动态模式（截断 / 回退）的术语长度可变，越长越容易夹带一个停用字
-    （第一连接件 / 上盖 / 安装座上 …）。沿用 _is_noisy_ngram 的「含任一停用字
-    即丢弃」会把大量真实部件名整条跳过、造成漏报，故动态术语改用这条更宽松的
+    （第一连接件 / 上盖 / 安装座上 …）。「含任一停用字即丢弃」会把大量
+    真实部件名整条跳过、造成漏报，故动态术语使用这条更宽松的
     判据；漏报的代价由动态模式自带的自由形式定义集 + 前缀回退来对冲。
     """
     return bool(seg) and all(ch in _STOPCHARS for ch in seg)
@@ -510,6 +494,16 @@ def _cjk_run(text: str, start: int, limit: int) -> str:
     return text[start:end]
 
 
+def _fixed_term(text: str, start: int, n: int, ordinal_len: int) -> str:
+    """取至多 n 个正文字符，保留序数前缀；遇到语法边界仍检查前面的术语。"""
+    run = _cjk_run(text, start, ordinal_len + n)
+    # 保护术语开头，避免把「与门」等名称在首字截成空串。
+    for i in range(ordinal_len + 2, len(run)):
+        if run[i] in _FIXED_BOUNDARY_CHARS or text.startswith("所述", start + i):
+            return run[:i]
+    return run
+
+
 # 序数前缀：所述第一连接件 / 所述第三弹簧
 _ORDINAL_RE = re.compile(r'第[一二三四五六七八九十百零〇两]+')
 
@@ -529,9 +523,9 @@ def _ordinal_len(text: str, start: int) -> int:
     return m.end() - start if m else 0
 
 
-# 兜底识别"权利要求N所述"引用语：_CITE_RE 解析不了的写法，若"所述"前 12 字内
-# 出现"权利要求\d"，也视为引用语公式。
-_CLAIM_CITE_PREFIX_RE = re.compile(r'权利要求\s*\d')
+# 兜底只允许编号、连接符和引用公式用字一直延伸到当前「所述」之前。
+# 不能因为附近出现过权利要求编号，就跳过「权利要求1所述，所述齿圈」里的第二处。
+_CLAIM_CITE_PREFIX_RE = re.compile(r'权利要求\s*\d[\d\s、,，\-－~～至到或和及与/任意项中之一的]*$')
 
 
 def _is_in_citation_formula(text: str, suoshu_pos: int) -> bool:
@@ -552,8 +546,12 @@ def _find_references(text: str) -> list:
         if any(a <= p < b for a, b in cite_spans) or _is_in_citation_formula(text, p):
             continue
         s = p + 2
+        while s < len(text) and text[s].isspace():
+            s += 1
         if s < len(text) and text[s] == "的":
             s += 1
+            while s < len(text) and text[s].isspace():
+                s += 1
         out.append((p, s))
     return out
 
@@ -699,7 +697,8 @@ def check_antecedent_basis(claims: dict, n: int, ignore_set: set,
     更早权项中）以"非所述"方式出现过一次（视为首次定义）。
 
     术语 X 的提取策略（X 从"所述"/"所述的"之后起算）：
-      • 默认（两个开关都关）：取 n 个 CJK 字；不足 n 字时取实际可用的 ≥2 字
+      • 默认（两个开关都关）：取至多 n 个 CJK 字，遇到标点或明确语法边界时
+        检查边界前的短术语，不因术语含有停用字而跳过
       • 仅 use_dynamic_truncate：按标点 / 单字虚词 / 黑名单词截断，剪掉尾部停用字；
         截断退化（<2 字）或溢出（> DYN_TRUNC_SOFT_MAX）时回落到 n 字
       • 仅 use_dynamic_fallback：取 n 字后从右往左逐字缩短，任一前缀有定义即放过
@@ -791,7 +790,8 @@ def check_antecedent_basis(claims: dict, n: int, ignore_set: set,
                     trunc = ""
 
             if not use_dynamic_truncate and not use_dynamic_fallback:
-                if not fixed or _is_noisy_fixed_term(fixed[ord_len:]):
+                fixed = _fixed_term(text, st, n, ord_len)
+                if len(fixed) < 2 or len(fixed) <= ord_len:
                     return None
                 return st, fixed, None, ""
             if use_dynamic_truncate and not use_dynamic_fallback:
@@ -828,6 +828,11 @@ def check_antecedent_basis(claims: dict, n: int, ignore_set: set,
                     return True
                 if extra and lookup(extra):
                     return True
+                # 两个动态选项都关闭时必须按本次选定的术语检查，不能再
+                # 隐式回退到独立出现过的短前缀。否则只有「齿圈」的前文
+                # 会放过「所述齿圈盖」，即使用户把 n 调大也永远查不出来。
+                if not use_dynamic_truncate and not use_dynamic_fallback:
+                    return False
                 # 较短前缀在前文**独立**出现过（右侧到边界）也算有基础：
                 # 定长 n 字 / 截断越界时「所述温区沿传送方向」「所述第一侧加热」
                 # 多带的字不该让真实术语 温区 / 第一侧 判成缺基础。
@@ -988,7 +993,14 @@ def _run_checks(paragraphs, start_idx, end_idx, n, ignore_set, vague_words, chec
                 use_dynamic_truncate, use_dynamic_fallback, boundary_blacklist) -> list:
     claims, duplicates = parse_claims_ex(paragraphs, start_idx, end_idx)
     if not claims:
-        return []
+        return [{
+            "kind": "parse",
+            "claim_no": None,
+            "para_idx": start_idx if 0 <= start_idx < len(paragraphs) else -1,
+            "context": "",
+            "message": "未识别到可检查的权利要求，引用基础检查未完成",
+            "suggestion": "请检查权项是否包含正文编号（如『1.』『1、』）；Word 自动编号需转换为文本编号后再检查",
+        }]
 
     results = []
     # 重号权项（如出现两个 "3."）

@@ -997,7 +997,13 @@ class MainWindow(QMainWindow):
 
         # 检查字数：6 个预设 + 自定义
         self._claim_n = 2
-        v.addWidget(QLabel("检查字数"))
+        n_label = QLabel("检查字数")
+        n_label.setToolTip(
+            "两个动态选项都关闭时，按所选字数检查，不自动缩短名称匹配。\n"
+            "2 字可能无法区分同前缀名称（如『电机』与『电机安装座』）；\n"
+            "较大字数也可能带入后续动词，检查结果需结合原文核对。"
+        )
+        v.addWidget(n_label)
         n_grid = QGridLayout()
         n_grid.setSpacing(3)
         self._claim_n_buttons = QButtonGroup(w)
@@ -2588,7 +2594,10 @@ class MainWindow(QMainWindow):
         self._claim_results = results
         self._render_claim_results(results)
         self._update_claim_status_bar()
-        if results:
+        if any(r.get("kind") == "parse" for r in results):
+            self.claim_status_label.setText("未识别到权项，检查未完成")
+            self._show_toast("未识别到权项，检查未完成", "warning")
+        elif results:
             self._show_toast(f"发现 {len(results)} 条问题", "warning")
         else:
             self._show_toast("未发现问题", "success")
@@ -2596,6 +2605,7 @@ class MainWindow(QMainWindow):
     def _render_claim_results(self, results: list):
         """渲染检查结果到右侧表格"""
         KIND_LABELS = {
+            "parse":      "识别异常",
             "antecedent": "引用基础",
             "dependency": "引用关系",
             "vague":      "不确定用语",
@@ -2969,7 +2979,8 @@ class MainWindow(QMainWindow):
         QMessageBox.information(
             self, "动态截断 — 功能说明",
             "【动态截断】黑名单边界识别法\n\n"
-            "默认的引用基础检查会取『所述』后面的固定 N 个字作为术语，\n"
+            "默认的引用基础检查会取『所述』后面至多 N 个字作为术语，\n"
+            "遇到标点或『的／与』等语法边界时，仍会检查前面的短术语。\n"
             "但 N 偏大时常把后续动词/方位词一起吞进来，造成误判。\n\n"
             "动态截断的做法：\n"
             "  • 从『所述』往后扫 CJK 字符\n"
@@ -2984,7 +2995,8 @@ class MainWindow(QMainWindow):
         QMessageBox.information(
             self, "动态回退 — 功能说明",
             "【动态回退】渐进式前缀匹配法\n\n"
-            "默认检查只比对固定 N 字术语，若 N 字串没在前文出现就报错；\n"
+            "默认检查比对至多 N 字的术语，遇到标点或语法边界也检查短术语；\n"
+            "两个动态选项都关闭时，不会自动缩短名称来匹配前文。\n"
             "但实际上前文可能用更短的形式定义过这个部件。\n\n"
             "动态回退的做法：\n"
             "  • 取『所述』后的 N 字术语\n"
