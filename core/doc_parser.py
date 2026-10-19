@@ -294,27 +294,37 @@ _ABSTRACT_INLINE_RE = re.compile(r'^\s*(?:说\s*明\s*书\s*)?摘\s*要\s*[:：]
 _MARK_ENTRY_RE = re.compile(
     r'(?<![图\d])(?<!图\s)[1-9]\d*\s*[-—–、.．,:：\s]\s*(?!图)[\u4e00-\u9fa5a-zA-Z]'
 )
+_MARK_LIST_ITEM_RE = re.compile(
+    r'(?:^|[；;，,\n])\s*(?:\d+[\u4e00-\u9fa5a-zA-Z]+|'
+    r'(?!图)[\u4e00-\u9fa5a-zA-Z]{2,20}\d+)\s*(?=[；;，,。]|$)'
+)
+# 必须是定义列表的标题，不能仅凭正文提及「附图标记」就命中。
+# 例如「图2为径向层次及附图标记示意图」不是标记列表。
+_MARK_HEADING_RE = re.compile(r'^附图标记\s*(?:[:：]|$)')
 
 
-def _find_mark_paragraphs(paragraphs, start: int, end: int) -> list:
+def _find_mark_paragraphs(paragraphs, start: int, end: int, *, explicit_only=False) -> list:
     """在 [start, end) 里找附图标记段，返回段落索引列表。
 
-    优先以含「附图标记」的段为起点；没有时，才把一段里有 ≥2 个标记条目的段当起点。
-    起点之后连续的条目段（每段 ≥1 个条目）一并收入，遇空段或其它正文即止。
+    优先以「附图标记：」标题段为起点；没有时，才把一段里有 ≥2 个标记条目的段当起点。
+    起点之后的条目段（每段 ≥1 个条目）一并收入，跳过空段，遇其它正文即止。
+    全文兜底时 explicit_only 限制起点必须有「附图标记」，避免误收正文列表。
     """
     def _entries(text: str) -> int:
-        return len(_MARK_ENTRY_RE.findall(text))
+        return len(_MARK_ENTRY_RE.findall(text)) + len(_MARK_LIST_ITEM_RE.findall(text))
 
     texts = [(i, paragraphs[i].text.strip()) for i in range(start, end)]
-    first = next((i for i, t in texts if "附图标记" in t), None)
-    if first is None:
+    first = next((i for i, t in texts if _MARK_HEADING_RE.match(t)), None)
+    if first is None and not explicit_only:
         first = next((i for i, t in texts if _entries(t) >= 2), None)
     if first is None:
         return []
     out = [first]
     for i in range(first + 1, end):
         t = paragraphs[i].text.strip()
-        if not t or not _entries(t):
+        if not t:
+            continue
+        if not _entries(t):
             break
         out.append(i)
     return out
@@ -430,13 +440,11 @@ def parse_document(doc_path: str) -> dict:
 
     # 如果在附图说明中没找到，全文搜索
     if mark_para is None:
-        for i, para in enumerate(paragraphs):
-            text = para.text.strip()
-            if "附图标记" in text and re.search(r'[1-9]', text):
-                mark_para = para
-                mark_para_idx = i
-                mark_paras = [para]
-                break
+        found = _find_mark_paragraphs(paragraphs, 0, len(paragraphs), explicit_only=True)
+        if found:
+            mark_para_idx = found[0]
+            mark_para = paragraphs[mark_para_idx]
+            mark_paras = [paragraphs[i] for i in found]
 
     return {
         'document': doc,

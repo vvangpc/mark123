@@ -14,6 +14,10 @@ _ENTRY_RE = re.compile(
     + r"(" + _NAME_CH + r"(?:" + _NAME_CH + r"|\d+(?!\s*[-—–、.．,:：]|\s+\S))*)"
 )
 _NUM_RE = re.compile(r"\d+")
+# 无分隔符的条目必须从行首或列表标点后开始，避免把「图1」当成部件。
+_COMPACT_ENTRY_RE = re.compile(
+    r'(?:^|[；;，,\n])\s*(\d+)([\u4e00-\u9fa5a-zA-Z]+)(?=\s*(?:[；;，,。]|$))'
+)
 
 
 def extract_marks_from_text(text: str) -> dict[int, str]:
@@ -51,6 +55,9 @@ def extract_marks_from_text(text: str) -> dict[int, str]:
             num = int(num_s)
             if num not in marks:
                 marks[num] = name
+
+    for m in _COMPACT_ENTRY_RE.finditer(text):
+        marks.setdefault(int(m.group(1)), m.group(2))
 
     # 策略2: "名称+数字" 模式（备用，如果策略1没有结果）
     if not marks:

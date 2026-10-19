@@ -171,6 +171,62 @@ def test_mark_names():
     print("[OK] 标记名含数字 / 多编号共用名称")
 
 
+def test_mark_extraction_fallback_and_compact_entries():
+    from core.doc_parser import parse_document
+    from core.mark_extractor import extract_marks_from_paragraphs, extract_marks_from_text
+
+    cases = [
+        # 缺少附图说明标题、标记标题与内容分段，并有空行。
+        (["附图标记：", "", "1-底座；2-支架", "", "3-电机。"],
+         {1: "底座", 2: "支架", 3: "电机"}),
+        (["附图说明", "附图标记：", "底座1，支架2", "电机3。"],
+         {1: "底座", 2: "支架", 3: "电机"}),
+        (["附图说明", "1底座；2支架；", "3电机。"],
+         {1: "底座", 2: "支架", 3: "电机"}),
+    ]
+    for lines, expected in cases:
+        path = _make_docx(lines + ["具体实施方式", "所述底座连接支架。"])
+        d = parse_document(path)
+        assert extract_marks_from_paragraphs(d["mark_paras"]) == expected
+        assert all("所述" not in p.text for p in d["mark_paras"])
+
+    assert extract_marks_from_text("附图标记：6-流量计；7真空通断阀；8-不锈钢管路。") == {
+        6: "流量计", 7: "真空通断阀", 8: "不锈钢管路",
+    }
+    for lines in [
+        ["附图说明", "图1为结构示意图。", "图2、图3分别为左视图和俯视图。"],
+        ["具体实施方式", "1-安装底座；2-固定支架。"],
+    ]:
+        assert not parse_document(_make_docx(lines))["mark_paras"]
+    print("[OK] 分段标记全文兜底、空行、名称在前及无分隔符条目；排除图号和正文列表")
+
+
+def test_mark_mention_in_figure_caption():
+    from core.doc_parser import parse_document
+    from core.mark_extractor import extract_marks_from_paragraphs
+
+    caption = "图2为根据本发明所述的过渡组件的径向层次及附图标记示意图。"
+    definitions = (
+        "附图标记：1-内层可调气腔；2-阻热层；3-外层可调气腔；4-安全壳；"
+        "5-内层水隙；6-中子屏内包壳；7-中子屏芯体；8-中子屏外包壳；9-外层水隙。"
+    )
+    expected = dict(enumerate([
+        "内层可调气腔", "阻热层", "外层可调气腔", "安全壳", "内层水隙",
+        "中子屏内包壳", "中子屏芯体", "中子屏外包壳", "外层水隙",
+    ], 1))
+    # 同时覆盖附图说明章节搜索和缺少章节标题时的全文兜底。
+    for heading in (["附图说明"], []):
+        d = parse_document(_make_docx(heading + [
+            caption, "图3为纵向剖视示意图。", definitions,
+            "具体实施方式", "所述安全壳包围外层水隙。",
+        ]))
+        assert [p.text for p in d["mark_paras"]] == [definitions]
+        assert d["mark_para"].text == definitions
+        assert extract_marks_from_paragraphs(d["mark_paras"]) == expected
+        assert not parse_document(_make_docx(heading + [caption]))["mark_paras"]
+    print("[OK] 图示说明提及附图标记时，仍定位真正的定义列表并提取全部九个标记")
+
+
 def test_claims_subject_protection():
     from core.annotator import annotate_section
     from core.doc_parser import DocSection
@@ -360,6 +416,8 @@ if __name__ == "__main__":
     test_wordbank_no_cross_word_hits()
     test_mark_paragraph_and_inline_abstract()
     test_mark_names()
+    test_mark_extraction_fallback_and_compact_entries()
+    test_mark_mention_in_figure_caption()
     test_claims_subject_protection()
     test_update_notes_list()
     test_content_area_edit_safety()
